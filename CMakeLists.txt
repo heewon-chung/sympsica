@@ -123,6 +123,13 @@ enable_testing()
 file(GLOB_RECURSE SYMPSICA_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/test/*.cpp")
 add_executable(sympsica_tests ${SYMPSICA_TEST_SOURCES})
 target_link_libraries(sympsica_tests PRIVATE sympsica gtest gtest_main)
+# task-3-brief.md W1.8: fixture files are read by absolute path (resolved
+# against the source tree, not ctest's working directory).
+target_compile_definitions(sympsica_tests PRIVATE
+    SYMPSICA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 include(GoogleTest)
-gtest_discover_tests(sympsica_tests)
+# TEST_PREFIX "utils." makes every currently-discovered test (all of test/
+# is utils-layer content through Phase 1) match `ctest -R utils`, the
+# Phase-1 SC's binding selector (task-3-brief.md).
+gtest_discover_tests(sympsica_tests TEST_PREFIX "utils.")
