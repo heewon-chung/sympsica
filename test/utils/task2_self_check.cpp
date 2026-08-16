@@ -126,6 +126,20 @@ TEST(Task2SelfCheck, SerdesU64VecRoundTrip) {
     }
 }
 
+// Corrupt length-prefix regression: a declared count near 2^61 makes the old
+// `in.size() >= u64_vec_wire_size(count)` check overflow (8 + 8*count wraps
+// around u64) and pass despite the 8-byte buffer being far too small. Must
+// be rejected via SYMPSICA_REQUIRE (abort), not reach std::vector's
+// allocator with a huge count.
+TEST(Task2SelfCheck, ReadU64VecRejectsOverflowingLengthPrefix) {
+    std::array<u8, 8> buf{};
+    u64 huge_count = (u64(1) << 61) - 1; // 8 + 8*huge_count wraps to a tiny value
+    for (int i = 0; i < 8; ++i) {
+        buf[i] = static_cast<u8>(huge_count >> (8 * i));
+    }
+    EXPECT_DEATH({ read_u64_vec(buf); }, "read_u64_vec: length prefix exceeds buffer");
+}
+
 // coeff_ctx.hpp: exercises CoeffCtxFp61 end-to-end (bitSize, isField,
 // characteristicTwo, fromBlock, plus/minus/mul) to confirm the adapter
 // actually compiles AND links, not merely parses.

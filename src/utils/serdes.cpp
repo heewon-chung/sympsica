@@ -46,8 +46,13 @@ void write_u64_vec(std::span<u8> out, std::span<const u64> values) {
 std::vector<u64> read_u64_vec(std::span<const u8> in) {
     SYMPSICA_REQUIRE(in.size() >= 8, "read_u64_vec: buffer too small for length prefix");
     u64 count = read_u64_le(in.data());
-    SYMPSICA_REQUIRE(in.size() >= u64_vec_wire_size(count),
-                      "read_u64_vec: buffer too small for declared length");
+    // Overflow-safe bound check: u64_vec_wire_size(count) = 8 + 8*count wraps
+    // around for count >= ~2^61, which would let a corrupt length prefix
+    // slip past a naive `in.size() >= u64_vec_wire_size(count)` check and
+    // crash via std::vector's bad_alloc instead of SYMPSICA_REQUIRE's error
+    // channel. Compare count directly against the buffer's capacity instead.
+    SYMPSICA_REQUIRE(count <= (in.size() - 8) / 8,
+                      "read_u64_vec: length prefix exceeds buffer");
     std::vector<u64> result(count);
     for (u64 i = 0; i < count; ++i) {
         result[i] = read_u64_le(in.data() + 8 + 8 * i);

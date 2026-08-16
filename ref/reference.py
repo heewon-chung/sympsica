@@ -75,6 +75,7 @@ def fp_from_u64(x: int) -> int:
     r = (r & P) + (r >> 61)
     if r >= P:
         r -= P
+    assert r == x % P, "fp_from_u64 double-fold disagrees with bigint mod"
     return r
 
 
