@@ -93,6 +93,21 @@ add_library(sympsica STATIC ${SYMPSICA_SOURCES})
 target_include_directories(sympsica PUBLIC "${CMAKE_SOURCE_DIR}/include")
 target_link_libraries(sympsica PUBLIC blake3)
 
+# W1.2: header-only include paths for include/sympsica/utils/coeff_ctx.hpp,
+# which hard-includes libOTe's CoeffCtx.h (mirrored into CoeffCtxFp61 — see
+# that header's top comment). These are HEADER paths only: no libOTe/
+# cryptoTools library target is built or linked here (that stays deferred to
+# Phase 2 per Phase 0's controller ruling 7). The two out/build/osx paths
+# point at config.h files generated as a side effect of PINS.md's documented
+# `python3 build.py --setup` re-vendor step (libOTe's own CMake configure
+# runs during that step even though --setup skips the actual build).
+target_include_directories(sympsica PUBLIC
+    "${CMAKE_SOURCE_DIR}/vendor/libOTe"
+    "${CMAKE_SOURCE_DIR}/vendor/libOTe/out/build/osx"
+    "${CMAKE_SOURCE_DIR}/vendor/libOTe/cryptoTools"
+    "${CMAKE_SOURCE_DIR}/vendor/libOTe/out/build/osx/cryptoTools"
+)
+
 # ---------------------------------------------------------------------------
 # party app: apps/ is owned by Phase 5; only wired once it exists.
 # ---------------------------------------------------------------------------

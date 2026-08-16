@@ -96,6 +96,29 @@ above rather than expecting `vendor/` to be tracked by git.
   otherwise applies to every language in the project, including BLAKE3's C sources
   pulled in via `FetchContent`, which reject a C++ dialect flag
   (`invalid argument '-std=gnu++20' not allowed with 'C'`).
+- W1.2 (`include/sympsica/utils/coeff_ctx.hpp`, Phase 1): the `sympsica` CMake
+  target's include paths now also cover `vendor/libOTe`, `vendor/libOTe/cryptoTools`,
+  and their CMake-generated `config.h` locations (`vendor/libOTe/out/build/osx/libOTe`,
+  `vendor/libOTe/out/build/osx/cryptoTools`) so `coeff_ctx.hpp` can hard-include
+  `libOTe/Tools/CoeffCtx.h`. The two `out/build/osx/...` paths are HEADER-ONLY paths
+  into files that already exist on disk as a side effect of the `python3 build.py
+  --setup` re-vendor step above (libOTe's own CMake configure runs during that step
+  even though `--setup` skips the actual build) — no new external pin, no libOTe/
+  cryptoTools library target is built or linked. **Portability gap**: `out/build/osx`
+  is macOS-specific (libOTe's `build.py` names this directory after the host OS); an
+  x86-64 Linux build will need `out/build/linux` (or whatever libOTe's `build.py`
+  names it there) — unverified, since only the macOS/ARM leg has been exercised (same
+  gap noted for W0.x below). If re-vendoring ever changes what `build.py --setup`
+  generates here, these two include paths will need to move with it.
+- W1.2 also surfaced that `libOTe/Tools/CoeffCtx.h`'s generic `binaryDecomposition()`
+  constructs a real `osuCrypto::BitVector` via a constructor whose implementation
+  lives in `cryptoTools/Common/BitVector.cpp` — not compiled/linked by this project
+  (consistent with Phase 0's ruling to leave libOTe/cryptoTools unbuilt). `coeff_ctx.hpp`
+  declares `binaryDecomposition()` (it compiles, since C++ templates are only
+  instantiated when called), but nothing in this repo currently calls it. Phase 2,
+  when it actually wires RegularDpf/NoisyVole, will need to either compile
+  `BitVector.cpp` (and whatever it transitively needs) or provide a lighter
+  alternative.
 - W0.5 FC caveat (verified empirically, not fixed — `field.hpp`'s content is fixed
   verbatim by the task brief): on this host's toolchain (AppleClang 21 + libc++),
   `include/sympsica/utils/field.hpp`'s `static_assert` compiles successfully under
