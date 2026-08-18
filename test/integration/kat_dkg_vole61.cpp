@@ -29,11 +29,13 @@
 
 #include "../utils/fixture_support.hpp"
 #include "sympsica/utils/field.hpp"
+#include "vole_beaver.hpp"
 #include "ztgate_pipeline.hpp"
 
 namespace {
 
 namespace zt = sympsica::ztgate;
+namespace zvole = sympsica::vole;
 namespace oc = osuCrypto;
 using sympsica::Fp;
 using sympsica::u64;
@@ -472,11 +474,18 @@ TEST(ZtGatePipeline, ZT5_DkgAt61Bits)
 
     sympsica_test::Fixture fx(sympsica_test::fixture_path("test/fixtures/zt5_dkg61.fixture"));
     const auto tag = build_tag();
-    EXPECT_EQ(fx.one("tag")[1], tag)
+    // ASSERT, not EXPECT (task-6 brief, addendum 10(ii)): a build-variant
+    // mismatch used to bury its own explanation under 16 downstream digest
+    // failures; fail fast here instead.
+    ASSERT_EQ(fx.one("tag")[1], tag)
         << "the pinned digests below were produced on a different build variant; "
            "see test/fixtures/zt5_dkg61.fixture for how to regenerate";
     EXPECT_EQ(fx.u64_at("domain"), zt::kDomain);
     EXPECT_EQ(fx.u64_at("num_points"), zt::kNumDigits);
+
+    // Hoisted out of the seed loop (task-6 brief, addendum 10(iii)): the row
+    // set is loop-invariant.
+    const auto rows = fx.all("zt5");
 
     for (u64 seed = 0; seed < kSeeds; ++seed) {
         SCOPED_TRACE("seed " + std::to_string(seed));
@@ -536,7 +545,6 @@ TEST(ZtGatePipeline, ZT5_DkgAt61Bits)
                     (unsigned long long)r, (unsigned long long)e.share_digest,
                     (unsigned long long)e.recon_digest);
 
-        const auto rows = fx.all("zt5");
         ASSERT_GT(rows.size(), seed) << "fixture has no zt5 row for seed " << seed;
         const auto& row = rows[seed];
         ASSERT_EQ(row.size(), 4u);
@@ -544,6 +552,139 @@ TEST(ZtGatePipeline, ZT5_DkgAt61Bits)
         EXPECT_EQ(std::stoull(row[1]), r) << "mask r drifted for seed " << seed;
         EXPECT_EQ(std::stoull(row[2]), e.share_digest) << "share digest drifted";
         EXPECT_EQ(std::stoull(row[3]), e.recon_digest) << "reconstruction digest drifted";
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TASK 6 REGION — W2.2: noisy VOLE at 61 bits -> OLE correlations -> Beaver
+// triples (test/integration/vole_beaver.{hpp,cpp}). See vole_beaver.hpp's
+// header comment for the actual oc::NoisyVoleSender/Receiver correlation
+// convention found in the vendored headers and the API constraints that
+// shape the Beaver-triple batching below; task-6-report.md has the full
+// derivation and the "OLE call granularity" accounting.
+// ---------------------------------------------------------------------------
+
+// OLE correctness: 10^4 random correlations from ONE NoisyVole call (the
+// call granularity NoisyVole's API allows — see vole_beaver.hpp). u[i]+v[i]
+// must reconstruct x[i]*y for every i, with y the single Sender-side value
+// this call produced.
+TEST(Vole61, OleCorrectnessOver10000Correlations)
+{
+    constexpr u64 kN = 10000;
+
+    TwoParty tp;
+    tp.fill_pool(zvole::kOlePerCallOts);
+
+    oc::PRNG sample_prng(oc::block(21, 0xABCD));
+    std::vector<Fp> x(kN);
+    for (u64 i = 0; i < kN; ++i) x[i] = Fp::from_u64(sample_prng.get<u64>());
+
+    auto ot0 = tp.pool[0].take(zvole::kOlePerCallOts);
+    auto ot1 = tp.pool[1].take(zvole::kOlePerCallOts);
+
+    oc::PRNG p0(oc::block(21, 0)), p1(oc::block(21, 1));
+    std::vector<Fp> u, v;
+    Fp y{};
+    auto t0 = zvole::ole_receive(x, u, p0, ot0, tp.sock[0]);
+    auto t1 = zvole::ole_send(y, v, kN, p1, ot1, tp.sock[1]);
+    eval(t0, t1);
+
+    ASSERT_EQ(u.size(), kN);
+    ASSERT_EQ(v.size(), kN);
+    EXPECT_LT(y.v, Fp::P);
+
+    u64 mismatches = 0;
+    for (u64 i = 0; i < kN; ++i) {
+        EXPECT_LT(u[i].v, Fp::P) << "u[" << i << "]";
+        EXPECT_LT(v[i].v, Fp::P) << "v[" << i << "]";
+        auto want = x[i].mul(y);
+        mismatches += (u[i].add(v[i]).v != want.v);
+    }
+    EXPECT_EQ(mismatches, 0u);
+}
+
+// Beaver correctness: assemble 10^4 triples from 2 batched NoisyVole calls
+// (one per cross term, per vole_beaver.hpp's beaver_triples), reconstruct
+// (a, b, c) for every triple, and assert c == a*b for ALL. Also does the
+// (non-gating) distribution-sanity check: first two moments of reconstructed
+// `a` over the sample, logged to stderr.
+TEST(Vole61, BeaverTriplesCorrectnessOver10000Triples)
+{
+    constexpr u64 kN = 10000;
+
+    TwoParty tp;
+    tp.fill_pool(2 * zvole::kOlePerCallOts);
+
+    std::array<oc::PRNG, 2> prng{oc::PRNG(oc::block(22, 0)), oc::PRNG(oc::block(22, 1))};
+    std::array<zvole::BeaverBatch, 2> out;
+
+    auto t0 = zvole::beaver_triples(zt::Role::Receiver, kN, prng[0], tp.pool[0], tp.sock[0], out[0]);
+    auto t1 = zvole::beaver_triples(zt::Role::Sender, kN, prng[1], tp.pool[1], tp.sock[1], out[1]);
+    eval(t0, t1);
+
+    ASSERT_EQ(out[0].c.size(), kN);
+    ASSERT_EQ(out[1].c.size(), kN);
+
+    u64 mismatches = 0;
+    long double sum = 0.0L, sumsq = 0.0L;
+    for (u64 i = 0; i < kN; ++i) {
+        EXPECT_LT(out[0].a[i].v, Fp::P) << "a_R[" << i << "]";
+        EXPECT_LT(out[1].a[i].v, Fp::P) << "a_S[" << i << "]";
+        EXPECT_LT(out[0].b[i].v, Fp::P) << "b_R[" << i << "]";
+        EXPECT_LT(out[1].b[i].v, Fp::P) << "b_S[" << i << "]";
+        EXPECT_LT(out[0].c[i].v, Fp::P) << "c_R[" << i << "]";
+        EXPECT_LT(out[1].c[i].v, Fp::P) << "c_S[" << i << "]";
+
+        const Fp a = out[0].a[i].add(out[1].a[i]);
+        const Fp b = out[0].b[i].add(out[1].b[i]);
+        const Fp c = out[0].c[i].add(out[1].c[i]);
+        mismatches += (c.v != a.mul(b).v);
+
+        sum += static_cast<long double>(a.v);
+        sumsq += static_cast<long double>(a.v) * static_cast<long double>(a.v);
+    }
+    EXPECT_EQ(mismatches, 0u);
+
+    // Distribution sanity (non-gating, report-only): mean/variance of the
+    // reconstructed `a` share over the 10^4-triple sample against the
+    // uniform-on-[0,P) expectation.
+    const long double p = static_cast<long double>(Fp::P);
+    const long double mean = sum / static_cast<long double>(kN);
+    const long double var = sumsq / static_cast<long double>(kN) - mean * mean;
+    std::fprintf(stderr,
+                 "[Vole61 distribution sanity] reconstructed a over %llu triples: "
+                 "mean=%.6Lf (uniform ~%.6Lf), variance=%.6Le (uniform ~%.6Le)\n",
+                 static_cast<unsigned long long>(kN), mean, p / 2.0L, var, p * p / 12.0L);
+}
+
+// Negative (W2.2 requirement 5, "convention error" FC leg): one deliberately
+// mis-signed assembly — skip the negation on cross term 1's Sender share
+// (see vole_beaver.hpp's ole_send `negate` parameter) WITHOUT adjusting
+// anything else — must yield c != a*b for random inputs. Proves the positive
+// test (BeaverTriplesCorrectnessOver10000Triples) can actually fail.
+TEST(Vole61, MisorientedAssemblyBreaksReconstruction)
+{
+    constexpr u64 kN = 100;
+
+    TwoParty tp;
+    tp.fill_pool(2 * zvole::kOlePerCallOts);
+
+    std::array<oc::PRNG, 2> prng{oc::PRNG(oc::block(23, 0)), oc::PRNG(oc::block(23, 1))};
+    std::array<zvole::BeaverBatch, 2> out;
+
+    auto t0 = zvole::beaver_triples(zt::Role::Receiver, kN, prng[0], tp.pool[0], tp.sock[0], out[0]);
+    auto t1 = zvole::beaver_triples(zt::Role::Sender, kN, prng[1], tp.pool[1], tp.sock[1], out[1],
+                                     /*corrupt_ct1_sign=*/true);
+    eval(t0, t1);
+
+    ASSERT_EQ(out[0].c.size(), kN);
+    ASSERT_EQ(out[1].c.size(), kN);
+
+    for (u64 i = 0; i < kN; ++i) {
+        const Fp a = out[0].a[i].add(out[1].a[i]);
+        const Fp b = out[0].b[i].add(out[1].b[i]);
+        const Fp c = out[0].c[i].add(out[1].c[i]);
+        EXPECT_NE(c.v, a.mul(b).v) << "triple " << i;
     }
 }
 
