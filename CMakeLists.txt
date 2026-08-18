@@ -263,6 +263,13 @@ endfunction()
 # test/utils/*.cpp -> sympsica_tests_utils, TEST_PREFIX "utils." (task-3-brief.md's
 # binding `ctest -R utils` selector keeps matching, unchanged).
 sympsica_add_test_target(utils utils)
+# test/core/*.cpp -> sympsica_tests_core, TEST_PREFIX "core." (task-10-brief.md,
+# Phase 3a: core/{share,table,state,pools} + protocols/update). Also covers
+# Update's local-filter self-checks (task-10 brief: "do not create an empty
+# update target" -- Task 11's formal `update.` tests land here too, keeping
+# the binding `ctest -R 'core|update'` selector matching via the "core" arm
+# until then).
+sympsica_add_test_target(core core)
 # test/integration/*.cpp -> sympsica_tests_integration, TEST_PREFIX "integration."
 # (task-6 brief, addendum 10(i): sources now exist under test/integration/;
 # the original "no sources exist yet" comment describing obligation (a)'s
