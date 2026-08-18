@@ -22,15 +22,17 @@ std::vector<Share> BeaverEngine::mul(std::span<const Share> x, std::span<const S
     }
 
     // ONE round: pack both vectors into a single outgoing buffer (d's
-    // followed by e's), send, then receive the peer's matching buffer.
+    // followed by e's), then exchange() with the peer's matching buffer --
+    // task-15-brief.md: BOTH parties transmit in this round (symmetric
+    // open), so send()-then-recv() is the deadlock hazard exchange() exists
+    // to retire; wire layout/order is unchanged from before the migration.
     std::vector<u8> out_buf(2 * n * 8);
     std::span<u8> out_span(out_buf);
     for (std::size_t i = 0; i < n; ++i) write_fp(out_span.subspan(i * 8, 8), d_mine[i]);
     for (std::size_t i = 0; i < n; ++i) write_fp(out_span.subspan((n + i) * 8, 8), e_mine[i]);
-    ch.send(out_buf);
 
     std::vector<u8> in_buf(2 * n * 8);
-    ch.recv(in_buf);
+    ch.exchange(out_buf, in_buf);
     std::span<const u8> in_span(in_buf);
 
     std::vector<Share> z(n);

@@ -48,13 +48,16 @@ std::vector<Fp> ZeroTest::open_masked(std::span<const Share> D, std::span<const 
         mine[i] = D[i].v.add(gates[i].mask_m.v);
     }
 
+    // task-15-brief.md: this is a symmetric open (both parties transmit in
+    // the same round) -- send()-then-recv() is the deadlock hazard
+    // exchange() exists to retire; wire layout/order is unchanged from
+    // before the migration.
     std::vector<u8> out_buf(n * 8);
     std::span<u8> out_span(out_buf);
     for (std::size_t i = 0; i < n; ++i) write_fp(out_span.subspan(i * 8, 8), mine[i]);
-    ch.send(out_buf);
 
     std::vector<u8> in_buf(n * 8);
-    ch.recv(in_buf);
+    ch.exchange(out_buf, in_buf);
     std::span<const u8> in_span(in_buf);
 
     std::vector<Fp> z(n);
