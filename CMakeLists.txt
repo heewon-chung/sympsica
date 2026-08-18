@@ -334,13 +334,12 @@ sympsica_add_test_target(protocols update)
 # guard is stale and has been removed).
 sympsica_add_test_target(integration integration)
 # test/gates/{oracle_dpf,}/*.cpp -> sympsica_tests_gates, TEST_PREFIX "gates."
-# (task-7-brief.md, W2.3: cross-implementation SEMANTIC check / ZT-4). Reuses
-# ztgate_pipeline.cpp's implementation (Task-5, W2.1) to generate real
-# libOTe DPF keys; that file lives under test/integration/ (owned by Task 5)
-# so it is passed in explicitly as an extra source rather than duplicated.
-# vole_beaver.cpp (Task 6, W2.2) is added the same way (task-13-brief.md,
-# requirement 1): test/gates/kat_minors.cpp's ONE real-VOLE end-to-end test
-# generates production-shaped triples through it.
-sympsica_add_test_target(gates gates
-    "${CMAKE_SOURCE_DIR}/test/integration/ztgate_pipeline.cpp"
-    "${CMAKE_SOURCE_DIR}/test/integration/vole_beaver.cpp")
+# (task-7-brief.md, W2.3: cross-implementation SEMANTIC check / ZT-4). Used to
+# pass test/integration/{ztgate_pipeline,vole_beaver}.cpp in explicitly as
+# extra sources (Task 5/6/13): those implementation files now live in
+# src/protocols/detail/ (task-16-brief.md, W5.1, R-HOST consolidation) and
+# are compiled into the `sympsica` library every test target already links
+# against, so the extra-source ARGN is no longer needed here; the headers
+# under test/integration/ are now thin forwarding shims to
+# include/sympsica/protocols/detail/.
+sympsica_add_test_target(gates gates)
