@@ -900,6 +900,54 @@ class Ref:
         with open(out_path, "w") as f:
             f.write("\n".join(lines) + "\n")
 
+    @staticmethod
+    def emit_sd_fixtures(seed: int, out_path: str) -> None:
+        """Emits SD-1/SD-2 fixture rows (task-14-brief.md R-SYNDROMES,
+        additive -- no existing section touched): one signed-set syndrome
+        vector per t in {0..4}, via the SAME golden generator as MIN-4
+        (Ref.make_signed_set / Ref.signed_syndromes / Ref.t_of -- "power_sums
+        difference" semantics, per Ref.syndromes's own docstring: signed
+        syndromes are algebraically the difference of two sides' power sums).
+
+        SD-1 ("synthetic buckets t in {0..4}, incl. the padding row") and
+        SD-2 ("t = T = 4 exactly, pivot at bound") both read from this single
+        5-row family: the t=0 row is DOUBLY meaningful -- make_signed_set(
+        state, 0) draws no elements, so signed_syndromes([], []) is already
+        the all-zero syndrome vector, which is simultaneously "a genuine
+        empty-difference bucket" and "the padding-row convention" (both
+        parties literally holding zero shares of an all-zero d) -- the C++
+        side (test/gates/kat_symdiff.cpp) exercises both by varying how that
+        SAME all-zero vector is additively shared, not by asking Python for
+        two different rows. SD-2 reads the t=4 row directly.
+        """
+        def row_tokens(d: Sequence[int], D: Sequence[int], t: int, n: int) -> str:
+            toks = [str(n)] + [str(x) for x in d] + [str(x) for x in D] + [str(t)]
+            return " ".join(toks)
+
+        lines: list[str] = []
+        lines.append(f"# sympsica SD fixture (generated) - format v{FIXTURE_FORMAT_VERSION}")
+        lines.append(f"# generator: python3 ref/reference.py emit-sd --seed {seed} --out {out_path}")
+        lines.append(f"format {FIXTURE_FORMAT_VERSION}")
+        lines.append(f"seed {seed}")
+        lines.append(f"p {P}")
+
+        sd_lines: list[str] = []
+        state = seed ^ 0x53443100  # 'SD1'-ish salt, distinct from MIN's 0x4D494E34
+        for t in range(0, 5):
+            xs, signs, state = Ref.make_signed_set(state, t)
+            d = Ref.signed_syndromes(xs, signs)
+            D = Ref.minors(d)
+            assert Ref.minors_det(d) == D, f"emit_sd_fixtures (t={t}): minors() vs minors_det() disagree"
+            tt = Ref.t_of(d)
+            assert tt == t, f"emit_sd_fixtures: t_of mismatch for t={t}: got {tt}"
+            sd_lines.append(row_tokens(d, D, tt, len(xs)))
+        lines.append(f"sd_count {len(sd_lines)}")
+        for row in sd_lines:
+            lines.append("sd " + row)
+
+        with open(out_path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+
 
 def _selftest_minors() -> None:
     """MIN-2 worked row (task-11-brief.md R-MIN; .handoff/sympsica-test-
@@ -978,6 +1026,11 @@ def _cli(argv: list[str]) -> int:
     emit_min.add_argument("--seed", type=int, required=True)
     emit_min.add_argument("--out", type=str, required=True)
 
+    emit_sd = sub.add_parser("emit-sd",
+                              help="emit SD-1/SD-2 fixture rows (task-14-brief.md, W4.4)")
+    emit_sd.add_argument("--seed", type=int, required=True)
+    emit_sd.add_argument("--out", type=str, required=True)
+
     args = parser.parse_args(argv)
     if args.cmd == "emit":
         Ref.emit_fixtures(args.seed, args.out)
@@ -994,6 +1047,10 @@ def _cli(argv: list[str]) -> int:
         return 0
     if args.cmd == "emit-min":
         Ref.emit_min_fixtures(args.seed, args.out)
+        print(f"wrote {args.out} (seed={args.seed})")
+        return 0
+    if args.cmd == "emit-sd":
+        Ref.emit_sd_fixtures(args.seed, args.out)
         print(f"wrote {args.out} (seed={args.seed})")
         return 0
     return 1

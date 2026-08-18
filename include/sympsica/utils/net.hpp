@@ -45,6 +45,17 @@ public:
 
     u64 bytes_sent() const;
 
+    // sends_count() — task-14-brief.md R-ROUNDS (additive accessor, same
+    // precedent as bytes_sent()/socket() above): counts Channel::send()
+    // CALLS, not bytes and not recv() calls. This project's protocols are
+    // synchronous send-then-recv, so one communication round is exactly one
+    // send() call per party; SD-3/TV-F13 (test/gates/kat_symdiff.cpp) use
+    // the before/after delta of this counter to pin SymDiffEvaluator's
+    // batched round count. Same known bypass as bytes_sent(): traffic that
+    // goes through socket() directly (the ztgate pipeline/DKG code) does
+    // NOT increment this counter.
+    u64 sends_count() const;
+
     // Bridge to the pipeline layer (task-8 brief, requirement 1 / controller
     // ruling): exposes the pimpl'd coproto::Socket by reference so a
     // libOTe/coproto protocol (e.g. test/integration/ztgate_pipeline.hpp's
@@ -63,6 +74,7 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     u64 bytes_sent_ = 0;
+    u64 sends_count_ = 0;
 };
 
 // ByteMeter — RAII scope measuring outgoing bytes sent on a Channel for one

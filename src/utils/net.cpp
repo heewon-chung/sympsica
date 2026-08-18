@@ -53,6 +53,7 @@ void Channel::send(std::span<const u8> data) {
     macoro::sync_wait(impl_->sock.send(data));
     macoro::sync_wait(impl_->sock.flush());
     bytes_sent_ += data.size();
+    ++sends_count_;
 }
 
 void Channel::recv(std::span<u8> data) {
@@ -61,6 +62,10 @@ void Channel::recv(std::span<u8> data) {
 
 u64 Channel::bytes_sent() const {
     return bytes_sent_;
+}
+
+u64 Channel::sends_count() const {
+    return sends_count_;
 }
 
 coproto::Socket& Channel::socket() {

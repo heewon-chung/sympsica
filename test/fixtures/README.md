@@ -158,6 +158,39 @@ x_i/s_i (the underlying signed elements) are NOT stored on the wire — only
 the resulting syndrome vector `d`, since that is all `MinorCircuit::eval`
 (and `Ref.minors`/`Ref.minors_det`) ever consume.
 
+## SD-1/SD-2 fixtures (`sd0.fixture` .. `sd2.fixture`, task-14-brief.md)
+
+Golden source: the SAME generator as the MIN fixtures above
+(`Ref.make_signed_set`/`Ref.signed_syndromes`/`Ref.t_of`, cross-checked
+against `Ref.minors_det()` before anything is written) — R-SYNDROMES
+("power_sums difference" semantics) is satisfied by `signed_syndromes`
+itself, whose docstring derives it as algebraically equivalent to
+`power_sums(A) - power_sums(B)`. Regenerate with:
+
+```
+python3 ref/reference.py emit-sd --seed <N> --out test/fixtures/sd<N>.fixture
+```
+
+`sd0.fixture` .. `sd2.fixture` were generated with exactly that command for
+`N` in `0..2` (mirroring the MIN/schedule fixture precedent: 3 files, not
+the full `seed0..9` range). `test/gates/kat_symdiff.cpp` consumes only
+`sd0.fixture`.
+
+| key | values | meaning |
+|---|---|---|
+| `sd_count` | `5` | number of `sd` rows (one per `t` in `{0,1,2,3,4}`, in order) |
+| `sd` | `<n> <d1..d7> <D1..D4> <expected_t>` | same row shape as `min3`/`min4`; row index `t` (0-based, matching `t`'s own value) is what `SymdiffSD1_*`/`SymdiffSD2_*` (kat_symdiff.cpp) index into |
+
+The `t=0` row (index 0) is doubly meaningful: `Ref.make_signed_set(state, 0)`
+draws no elements, so `Ref.signed_syndromes([], [])` is already the
+all-zero vector — simultaneously "a genuine empty-difference bucket" AND
+"the padding-row convention" SD-1 names (a beta paired with an all-zero-
+SHARE syndrome row). `test/gates/kat_symdiff.cpp` exercises both readings
+of that one row by varying HOW it is additively shared (a random split
+summing to zero vs. a literal `Share{Fp(0)}` on both parties), not by
+asking `reference.py` for two different rows. SD-2 ("t = T = 4 exactly,
+pivot at bound") reads row index 4 directly.
+
 ## Pinned PRNG: splitmix64
 
 Both `ref/reference.py` (`splitmix64_next`) and
