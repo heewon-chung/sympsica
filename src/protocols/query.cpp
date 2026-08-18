@@ -1,0 +1,351 @@
+#include "sympsica/protocols/query.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <set>
+#include <span>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+#include "sympsica/gates/beaver.hpp"
+#include "sympsica/gates/symdiff.hpp"
+#include "sympsica/utils/common.hpp"
+#include "sympsica/utils/crash.hpp"
+#include "sympsica/utils/serdes.hpp"
+
+// query.cpp — Protocol 4 + full evaluation (task-17-brief.md W5.2-W5.4).
+//
+// Wire layout (R-ROUND0, binding):
+//
+//   Round 0 (EVERY query, before path selection): Channel::exchange() of a
+//   fixed 9-byte record {u64 my_size LE, u8 announce}, announce = (|st.J| >
+//   Params::U_MAX). Both parties learn the OTHER party's current raw-set
+//   size and announce bit from this ONE round -- this is what SwitchRule::
+//   decide() needs (nA/nB/counterpartAnnounced) BEFORE either party can
+//   pick a path, and it is ALSO the "+ my current size" W5.3 step 2 asks
+//   for (no separate size resend on the incremental leg) and the "+ sizes"
+//   W5.4 asks for (ditto, full leg).
+//
+//   Incremental-only round: Channel::exchange() of a FIXED-LENGTH,
+//   length-PREFIX-FREE array of exactly Params::U_MAX raw LE u64 words
+//   (8*u_max bytes each way) -- J~, this party's padded dirty-bucket set.
+//   No length prefix: both parties already know the length is exactly
+//   u_max by construction (R-ROUND0), so write_u64_vec's built-in count
+//   prefix would be pure overhead here.
+//
+//   Full-path-only round: Channel::exchange() of serdes.hpp's ordinary
+//   length-prefixed u64 vector (write_u64_vec/read_u64_vec) carrying
+//   `supports` -- this party's padded occupied-bucket set, padded to
+//   min(my_size, Params::M). Unlike J~, this length is NOT fixed across
+//   parties (it tracks each party's own my_size), so the wire format keeps
+//   serdes.hpp's normal length prefix; the receiving side additionally
+//   cross-checks the parsed count against min(counterpart_size, M) (known
+//   already from round 0) as a protocol-desync guard, but the length
+//   prefix itself is what makes read_u64_vec self-describing.
+//
+// PRG / pad sampler (R-SEED): a small production splitmix64-based sampler,
+// seeded by mixing (seed, tag, query_no), tags "pad" (incremental) /
+// "padfull" (full) -- see sample_pad_indices() below. This mirrors (does
+// NOT reuse -- production cannot depend on test/**) the SAME public-domain
+// splitmix64 algorithm test/utils/fixture_support.hpp already pins for KAT
+// determinism; the two independent implementations are expected to (and,
+// by construction, do) compute bit-identical splitmix64 outputs for the
+// same state, since the algorithm itself is what's shared, not the code.
+//
+// R-SYND (syndrome construction): built LOCALLY, never sent -- for each
+// beta in the evaluation set, this party's share of (d1..d7)(beta) is
+// +table.row(beta) if Receiver, -table.row(beta) (Fp::neg(), which already
+// maps 0 -> 0) if Sender; an unoccupied bucket reads back the zero row
+// (PowerSumTable::row's own documented padding-row semantics), so a padded
+// beta needs no special-casing here.
+
+namespace sympsica {
+
+namespace {
+
+// --- explicit-LE helpers for the two non-serdes-primitive wire pieces in
+// this file (round 0's record, J~'s fixed raw array) -- same "explicit LE
+// for scalars beyond write_fp/write_u64_vec" allowance core/state.cpp's own
+// local helpers already establish (R4).
+void write_u64_le(u8* dst, u64 x) {
+    for (int i = 0; i < 8; ++i) dst[i] = static_cast<u8>(x >> (8 * i));
+}
+
+u64 read_u64_le(const u8* src) {
+    u64 x = 0;
+    for (int i = 0; i < 8; ++i) x |= static_cast<u64>(src[i]) << (8 * i);
+    return x;
+}
+
+// --- production splitmix64 pad sampler (R-SEED) -------------------------
+
+u64 splitmix64_next(u64& state) {
+    state += 0x9E3779B97F4A7C15ull;
+    u64 z = state;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+
+// Folds a short ASCII tag into a u64 (FNV-1a-style, same construction as
+// splitmix64's own pairing -- see this file's top comment on why this
+// duplicates rather than includes the pinned test digest).
+u64 fnv1a_tag(const char* tag) {
+    u64 h = 0xCBF29CE484222325ull;
+    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(tag); *p != 0; ++p) {
+        h ^= *p;
+        h *= 0x100000001B3ull;
+    }
+    return h;
+}
+
+u64 pad_prg_seed(u64 seed, const char* tag, u64 query_no) {
+    u64 state = seed ^ fnv1a_tag(tag);
+    (void)splitmix64_next(state);
+    state ^= query_no;
+    (void)splitmix64_next(state);
+    return state;
+}
+
+// sample_pad_indices(seed, tag, query_no, count, exclude) — rejection-
+// samples `count` DISTINCT bucket indices in [1, Params::M] from the PRG
+// seeded by (seed, tag, query_no), skipping any index already in `exclude`
+// OR already picked earlier in THIS call (both W5.3/W5.4: "collisions with
+// the counterpart's set are fine per spec" -- only self-collisions and
+// collisions with `exclude` are rejected).
+std::vector<u32> sample_pad_indices(u64 seed, const char* tag, u64 query_no, u64 count,
+                                     const std::set<u32>& exclude) {
+    std::vector<u32> out;
+    out.reserve(count);
+    std::unordered_set<u32> picked;
+    picked.reserve(count);
+    u64 state = pad_prg_seed(seed, tag, query_no);
+    while (out.size() < count) {
+        u64 r = splitmix64_next(state);
+        u32 idx = static_cast<u32>(r % Params::M) + 1;
+        if (exclude.count(idx) != 0 || picked.count(idx) != 0) continue;
+        picked.insert(idx);
+        out.push_back(idx);
+    }
+    return out;
+}
+
+// --- R-SYND: local syndrome share construction ---------------------------
+
+std::array<Share, Params::K> build_syndrome(const PartyState& st, u32 beta, Role role) {
+    std::array<Fp, Params::K> row = st.table.row(beta); // zero row if unoccupied
+    std::array<Share, Params::K> out{};
+    for (u64 k = 0; k < Params::K; ++k) {
+        out[k] = Share{role == Role::Sender ? row[k].neg() : row[k]};
+    }
+    return out;
+}
+
+// eval_union(role, st, pools, ch, union_set) — R-EXHAUST guard, then the
+// shared "build syndromes -> SymDiffEvaluator::eval_buckets" step common to
+// both the incremental and full paths. betas is the evaluation set, SORTED
+// ASCENDING (R-SYND: both parties derive it identically from the SAME
+// exchanged union, so both sides' `betas`/`new_shares` line up index-for-
+// index without any further coordination).
+std::pair<std::vector<u32>, std::vector<Share>> eval_union(Role role, const PartyState& st,
+                                                             Pools& pools, Channel& ch,
+                                                             const std::set<u32>& union_set) {
+    std::vector<u32> betas(union_set.begin(), union_set.end()); // std::set already ascending
+
+    // R-EXHAUST: an undersized pool is a clean pre-evaluation abort -- NO
+    // state has been mutated by anything above this point (round 0 / the
+    // J~-or-supports exchange only read st.*, never wrote it).
+    SYMPSICA_REQUIRE(pools.triples.remaining() >= 44 * betas.size() &&
+                          pools.gates.remaining() >= 4 * betas.size(),
+                      "Query::run: pool exhaustion -- refill_offline is required between "
+                      "queries (R-EXHAUST); Query never refills its own pools");
+
+    std::vector<std::array<Share, Params::K>> syndromes;
+    syndromes.reserve(betas.size());
+    for (u32 beta : betas) syndromes.push_back(build_syndrome(st, beta, role));
+
+    BeaverEngine engine(role);
+    std::vector<Share> new_shares =
+        SymDiffEvaluator::eval_buckets(betas, syndromes, engine, pools.triples, pools.gates, ch);
+    return {std::move(betas), std::move(new_shares)};
+}
+
+// commit(...) — the ATOMIC COMMIT shared by both paths (FT6: only ever
+// called AFTER eval_union has fully returned). `replace` selects W5.4's
+// REPLACE semantics (cache := exactly {beta -> new[beta] : beta in
+// union}, t_share := sum(new)) vs W5.3's ACCUMULATE semantics (cache/
+// t_share updated only for buckets in `union`, everything else untouched).
+void commit(PartyState& st, const std::vector<u32>& betas, const std::vector<Share>& new_shares,
+            bool replace, const std::string& state_path) {
+    if (replace) {
+        Fp total(0);
+        for (const Share& sh : new_shares) total = total.add(sh.v);
+        st.cache.clear();
+        for (std::size_t i = 0; i < betas.size(); ++i) st.cache[betas[i]] = new_shares[i];
+        st.t_share = Share{total};
+    } else {
+        Fp delta(0);
+        for (std::size_t i = 0; i < betas.size(); ++i) {
+            Fp old_val(0);
+            auto it = st.cache.find(betas[i]);
+            if (it != st.cache.end()) old_val = it->second.v;
+            delta = delta.add(new_shares[i].v.sub(old_val));
+            st.cache[betas[i]] = new_shares[i];
+        }
+        st.t_share.v = st.t_share.v.add(delta);
+    }
+    st.J.clear();
+    ++st.query_no;
+
+    // R-CRASH: everything above is pure in-memory PartyState mutation;
+    // this is the LAST point before persistence. A crash here leaves the
+    // ON-DISK file exactly as it was before this query (save() has not
+    // been called yet), even though *this* (the in-memory PartyState) has
+    // already been mutated -- the in-memory copy is discarded along with
+    // the process, so only the disk file's atomicity matters.
+    crash_point("pre-serialize");
+    st.save(state_path);
+}
+
+// INV2 = (P+1)/2 = 2^60 exactly (P = 2^61-1 is odd; 2*2^60 = 2^61 = P+1 ==
+// 1 mod P) -- R-CONVERT's field inverse of 2.
+constexpr Fp INV2 = Fp(1ull << 60);
+
+// convert(role, t_share, nA, nB) — R-CONVERT, step 5 (W5.3/W5.4's shared
+// final step): result = affine(-inv2, t_share, inv2*(nA+nB)) with the
+// additive constant landing ONLY on the Receiver (core/share.hpp's affine()
+// always adds `b`; the CALLER decides which party passes a nonzero one --
+// this is exactly that decision, made once, here). Reduces to c_R =
+// inv2*(nA+nB-t_R) on the Receiver and c_S = -inv2*t_S on the Sender,
+// matching W5.3 step 5 literally.
+Share convert(Role role, const Share& t_share, u64 nA, u64 nB) {
+    Fp a = INV2.neg();
+    Fp b = role == Role::Receiver ? INV2.mul(Fp::from_u64(nA).add(Fp::from_u64(nB))) : Fp(0);
+    return affine(a, t_share, b);
+}
+
+// --- incremental path (W5.3) ---------------------------------------------
+
+Share run_incremental(Role role, PartyState& st, Pools& pools, Channel& ch,
+                       const std::string& state_path, u64 seed, u64 my_size,
+                       u64 counterpart_size) {
+    SYMPSICA_REQUIRE(st.J.size() <= Params::U_MAX,
+                      "Query::run: |J| exceeds u_max on the incremental path (SwitchRule "
+                      "invariant violation)");
+    const u64 pad_count = Params::U_MAX - st.J.size();
+    std::vector<u32> pad = sample_pad_indices(seed, "pad", st.query_no, pad_count, st.J);
+
+    std::vector<u64> j_tilde;
+    j_tilde.reserve(Params::U_MAX);
+    for (u32 beta : st.J) j_tilde.push_back(beta);
+    for (u32 beta : pad) j_tilde.push_back(beta);
+    SYMPSICA_REQUIRE(j_tilde.size() == Params::U_MAX,
+                      "Query::run: J~ padding produced the wrong size (internal bug)");
+
+    std::vector<u8> out_buf(8 * Params::U_MAX);
+    for (u64 i = 0; i < Params::U_MAX; ++i) write_u64_le(out_buf.data() + i * 8, j_tilde[i]);
+    std::vector<u8> in_buf(8 * Params::U_MAX);
+    ch.exchange(out_buf, in_buf);
+
+    std::set<u32> union_set;
+    for (u64 v : j_tilde) union_set.insert(static_cast<u32>(v));
+    for (u64 i = 0; i < Params::U_MAX; ++i) {
+        union_set.insert(static_cast<u32>(read_u64_le(in_buf.data() + i * 8)));
+    }
+
+    auto [betas, new_shares] = eval_union(role, st, pools, ch, union_set);
+    commit(st, betas, new_shares, /*replace=*/false, state_path);
+    return convert(role, st.t_share, my_size, counterpart_size);
+}
+
+// --- full path (W5.4) -----------------------------------------------------
+
+Share run_full(Role role, PartyState& st, Pools& pools, Channel& ch, const std::string& state_path,
+               u64 seed, u64 my_size, u64 counterpart_size) {
+    const u64 target = std::min(my_size, Params::M);
+
+    std::set<u32> occupied;
+    for (const auto& [beta, row] : st.table.rows()) {
+        (void)row;
+        occupied.insert(beta);
+    }
+    SYMPSICA_REQUIRE(occupied.size() <= target,
+                      "Query::run: occupied buckets exceed min(my_size, m) (invariant violation)");
+    const u64 pad_count = target - occupied.size();
+    std::vector<u32> pad = sample_pad_indices(seed, "padfull", st.query_no, pad_count, occupied);
+
+    std::vector<u64> supports;
+    supports.reserve(target);
+    for (u32 beta : occupied) supports.push_back(beta);
+    for (u32 beta : pad) supports.push_back(beta);
+    SYMPSICA_REQUIRE(supports.size() == target,
+                      "Query::run: supports padding produced the wrong size (internal bug)");
+
+    std::vector<u8> out_buf(u64_vec_wire_size(supports.size()));
+    write_u64_vec(out_buf, supports);
+
+    const u64 counterpart_target = std::min(counterpart_size, Params::M);
+    std::vector<u8> in_buf(u64_vec_wire_size(counterpart_target));
+    ch.exchange(out_buf, in_buf);
+    std::vector<u64> their_supports = read_u64_vec(in_buf);
+    SYMPSICA_REQUIRE(their_supports.size() == counterpart_target,
+                      "Query::run: peer supports length disagrees with round-0 size "
+                      "(protocol desync)");
+
+    std::set<u32> union_set;
+    for (u64 v : supports) union_set.insert(static_cast<u32>(v));
+    for (u64 v : their_supports) union_set.insert(static_cast<u32>(v));
+
+    auto [betas, new_shares] = eval_union(role, st, pools, ch, union_set);
+    commit(st, betas, new_shares, /*replace=*/true, state_path);
+    return convert(role, st.t_share, my_size, counterpart_size);
+}
+
+} // namespace
+
+SwitchRule::Path SwitchRule::decide(const Params& pp, u64 nA, u64 nB, u64 myJ, bool firstQuery,
+                                     bool counterpartAnnounced) {
+    (void)pp;
+    if (firstQuery || 2 * Params::U_MAX >= std::min(nA, Params::M) + std::min(nB, Params::M)) {
+        return Path::FullPublic;
+    }
+    if (myJ > Params::U_MAX || counterpartAnnounced) {
+        return Path::FullAnnounced;
+    }
+    return Path::Incremental;
+}
+
+Share Query::run(Role role, PartyState& st, Pools& pools, Channel& ch, const Params& params,
+                  const std::string& state_path, u64 seed) {
+    (void)params;
+    const bool first_query = (st.query_no == 0);
+    const bool my_announce = (st.J.size() > Params::U_MAX);
+
+    // Round 0 (R-ROUND0): fixed 9-byte record {u64 my_size, u8 announce}.
+    u8 out0[9];
+    write_u64_le(out0, st.my_size);
+    out0[8] = my_announce ? 1 : 0;
+    u8 in0[9];
+    ch.exchange(std::span<const u8>(out0, 9), std::span<u8>(in0, 9));
+    const u64 counterpart_size = read_u64_le(in0);
+    const bool counterpart_announce = in0[8] != 0;
+
+    SwitchRule::Path path = SwitchRule::decide(params, st.my_size, counterpart_size, st.J.size(),
+                                                first_query, counterpart_announce);
+
+    switch (path) {
+        case SwitchRule::Path::Incremental:
+            return run_incremental(role, st, pools, ch, state_path, seed, st.my_size,
+                                    counterpart_size);
+        case SwitchRule::Path::FullPublic:
+        case SwitchRule::Path::FullAnnounced:
+            return run_full(role, st, pools, ch, state_path, seed, st.my_size, counterpart_size);
+    }
+    SYMPSICA_REQUIRE(false, "Query::run: SwitchRule::decide returned an unhandled path "
+                             "(internal bug)");
+    return Share{Fp(0)}; // unreachable; SYMPSICA_REQUIRE(false, ...) aborts above.
+}
+
+} // namespace sympsica

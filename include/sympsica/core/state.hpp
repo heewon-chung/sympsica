@@ -33,6 +33,17 @@ struct PartyState {
     Share t_share;
     u64 my_size = 0;
 
+    // query_no — task-17-brief.md R-QNO: number of queries this party has
+    // COMMITTED so far (incremented inside Query::run's atomic commit,
+    // AFTER evaluation, alongside cache/t_share/J -- so a crash before
+    // commit never bumps it). firstQuery = (query_no == 0). Additive
+    // save()/load() format extension (R-QNO: authorized, Phase-3-owned
+    // file); pre-Phase-5 state files do not carry this field and are
+    // INCOMPATIBLE with load() from this point on -- acceptable for this
+    // PoC (documented in task-17-report.md), since no on-disk state
+    // predates this change in practice.
+    u64 query_no = 0;
+
     // save(path): serializes every field to `path + ".tmp"`, fsyncs it, then
     // std::rename()s it over `path` -- the atomic-commit substrate FT6
     // relies on (plan W3.3). R4: every field goes through utils/serdes

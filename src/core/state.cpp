@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "sympsica/utils/common.hpp"
+#include "sympsica/utils/crash.hpp"
 #include "sympsica/utils/params.hpp"
 #include "sympsica/utils/serdes.hpp"
 
@@ -63,8 +64,9 @@ void PartyState::save(const std::string& path) const {
     const u64 cache_bytes = 8 + sorted_cache.size() * (4 + 8);
     const u64 t_share_bytes = 8;
     const u64 my_size_bytes = 8;
+    const u64 query_no_bytes = 8; // R-QNO: additive tail field.
     const u64 total = my_ids_bytes + table_bytes + j_bytes + cache_bytes +
-                       t_share_bytes + my_size_bytes;
+                       t_share_bytes + my_size_bytes + query_no_bytes;
 
     std::vector<u8> buf(total);
     u8* p = buf.data();
@@ -105,6 +107,9 @@ void PartyState::save(const std::string& path) const {
     write_u64_le(p, my_size);
     p += 8;
 
+    write_u64_le(p, query_no); // R-QNO: additive tail field.
+    p += 8;
+
     SYMPSICA_REQUIRE(static_cast<u64>(p - buf.data()) == total,
                       "PartyState::save: buffer size mismatch (internal bug)");
 
@@ -113,14 +118,26 @@ void PartyState::save(const std::string& path) const {
     SYMPSICA_REQUIRE(f != nullptr, "PartyState::save: could not open tmp file for writing");
     std::size_t written = std::fwrite(buf.data(), 1, buf.size(), f);
     SYMPSICA_REQUIRE(written == buf.size(), "PartyState::save: short write");
+    // R-CRASH: bytes are on their way to the tmp file (possibly still only
+    // buffered, not yet fsync'd durable) -- a kill here leaves `path` itself
+    // completely untouched (the rename below hasn't happened) and `path +
+    // ".tmp"` in an indeterminate, but irrelevant, state (a reader only ever
+    // opens `path`).
+    crash_point("mid-temp-write");
     SYMPSICA_REQUIRE(std::fflush(f) == 0, "PartyState::save: fflush failed");
     SYMPSICA_REQUIRE(fsync(fileno(f)) == 0, "PartyState::save: fsync failed");
+    // R-CRASH: tmp file is now durable on disk; `path` is still untouched.
+    crash_point("post-fsync");
     SYMPSICA_REQUIRE(std::fclose(f) == 0, "PartyState::save: fclose failed");
 
+    // R-CRASH: about to atomically swap the durable tmp file over `path`.
+    crash_point("pre-rename");
     // Atomic-commit substrate for FT6: the rename is atomic on the same
     // filesystem, so a reader never observes a partially-written `path`.
     SYMPSICA_REQUIRE(std::rename(tmp.c_str(), path.c_str()) == 0,
                       "PartyState::save: atomic rename over destination failed");
+    // R-CRASH: `path` now reflects the new state; the swap is complete.
+    crash_point("post-rename");
 }
 
 void PartyState::load(const std::string& path) {
@@ -190,6 +207,14 @@ void PartyState::load(const std::string& path) {
 
     SYMPSICA_REQUIRE(rest.size() >= 8, "PartyState::load: truncated (my_size)");
     my_size = read_u64_le(rest.data());
+    rest = rest.subspan(8);
+
+    // R-QNO: additive tail field -- a pre-Phase-5 state file (written
+    // before query_no existed) is truncated here and correctly aborts
+    // rather than silently defaulting query_no to 0 from garbage/absent
+    // bytes (documented incompatibility, task-17-report.md).
+    SYMPSICA_REQUIRE(rest.size() >= 8, "PartyState::load: truncated (query_no)");
+    query_no = read_u64_le(rest.data());
     rest = rest.subspan(8);
 }
 
