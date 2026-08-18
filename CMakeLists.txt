@@ -242,7 +242,22 @@ function(sympsica_add_test_target _dir_name _test_prefix)
     target_compile_definitions(${_target} PRIVATE
         SYMPSICA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
-    gtest_discover_tests(${_target} TEST_PREFIX "${_test_prefix}.")
+    # task-8 brief, requirement 4: the W2.4 pool-scale gate
+    # (test/integration/w24_pool_gate.cpp) may take up to ~10 min worst case
+    # over real TCP; set a 900s ctest TIMEOUT so a hang aborts loudly instead
+    # of stalling the suite indefinitely. gtest_discover_tests defers test
+    # discovery to build time (it writes the test list into a generated
+    # CTestTestfile.cmake via a POST_BUILD step), so there is no per-test
+    # hook to target only that one test at configure time; PROPERTIES here
+    # applies to every test discovered from this call. Scoped to the
+    # `integration` target only (harmless elsewhere: every other integration
+    # test already finishes in well under a second, so a 900s ceiling is
+    # purely a safety net, never the expected runtime).
+    set(_extra_test_properties "")
+    if(_dir_name STREQUAL "integration")
+        set(_extra_test_properties PROPERTIES TIMEOUT 900)
+    endif()
+    gtest_discover_tests(${_target} TEST_PREFIX "${_test_prefix}." ${_extra_test_properties})
 endfunction()
 
 # test/utils/*.cpp -> sympsica_tests_utils, TEST_PREFIX "utils." (task-3-brief.md's
