@@ -272,9 +272,22 @@ function(sympsica_add_test_target _dir_name _test_prefix)
     # `integration` target only (harmless elsewhere: every other integration
     # test already finishes in well under a second, so a 900s ceiling is
     # purely a safety net, never the expected runtime).
+    # task-15-brief.md SC2/SC5: the NetExchange deadlock-stress and
+    # production-path tests (test/utils/net_exchange.cpp) must FAIL loudly
+    # via ctest TIMEOUT instead of hanging if Channel::exchange()'s
+    # concurrent send/recv composition ever regresses to a blocking
+    # send()-then-recv() pattern. Scoped to the whole `utils` target (same
+    # idiom as `integration` below) rather than per-test: gtest_discover_tests
+    # defers discovery to build time, so there is no per-test hook at
+    # configure time (see the `integration` comment below); every OTHER test
+    # in this target (net_smoke.cpp, kat_field.cpp, kat_encoding.cpp) already
+    # finishes in well under a second over a small loopback buffer, so a 60s
+    # ceiling is purely a safety net for them, never the expected runtime.
     set(_extra_test_properties "")
     if(_dir_name STREQUAL "integration")
         set(_extra_test_properties PROPERTIES TIMEOUT 900)
+    elseif(_dir_name STREQUAL "utils")
+        set(_extra_test_properties PROPERTIES TIMEOUT 60)
     endif()
     gtest_discover_tests(${_target} TEST_PREFIX "${_test_prefix}." ${_extra_test_properties})
 endfunction()
