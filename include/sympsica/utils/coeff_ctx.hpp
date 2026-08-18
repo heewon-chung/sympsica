@@ -122,6 +122,23 @@ struct CoeffCtxFp61 : osuCrypto::CoeffCtxInteger {
     // above, which reduces via Fp::from_u64's Mersenne fold. Tasks 5-6: call
     // Fp values through this ctx (not a raw memcpy) on every value that has
     // crossed the wire, precisely so this check fires.
+    //
+    // ENDIANNESS (task-5 addendum, connecting this audit to the project-wide
+    // "serdes.hpp is the only wire codec" rule): the base-class codec these
+    // overrides wrap is CoeffCtxInteger's std::memcpy, i.e. a HOST-endian
+    // dump of Fp's u64. It is byte-equivalent to serdes.hpp's explicit
+    // little-endian shift rule only on little-endian hosts — which every
+    // target this project builds for is (x86-64 and arm64/AArch64 in
+    // little-endian mode). sympsica's own protocol messages must therefore
+    // still go through serdes, which is LE by construction; this memcpy codec
+    // is exempted only because it is internal to libOTe's protocols (both
+    // ends of every buffer it encodes/decodes are libOTe code running on the
+    // same wire format), and it is guarded here rather than replaced because
+    // the byte layout is libOTe's to choose. On a hypothetical big-endian
+    // host the two codecs would disagree and this exemption would have to be
+    // revisited. test/integration/ztgate_pipeline.cpp's read_leaf_val()
+    // decodes RegularDpfKey::mLeafVals with explicit LE shifts for exactly
+    // this reason.
     template<typename SrcIter, typename DstIter>
     void deserialize(SrcIter&& begin, SrcIter&& end, DstIter&& dstBegin) const {
         osuCrypto::CoeffCtxInteger::deserialize(begin, end, dstBegin);

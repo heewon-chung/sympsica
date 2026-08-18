@@ -124,6 +124,17 @@ if(SYMPSICA_BUILD_LIBOTE)
     # Base OTs + extensions needed by RegularDpf (DKG) + NoisyVole + SilentOT.
     set(ENABLE_SIMPLESTOT ON CACHE BOOL "Chou-Orlandi base OT" FORCE)
     set(ENABLE_SILENTOT ON CACHE BOOL "Silent OT extension" FORCE)
+    # REQUIRED by ENABLE_SILENTOT at runtime, not just for its own protocol:
+    # SilentOtExt{Sender,Receiver}::genBaseCors() — the path taken whenever
+    # setBaseCors() was not called by hand — is compiled inside
+    # `#if defined(ENABLE_SOFTSPOKEN_OT) && defined(LIBOTE_HAS_BASE_OT)`; with
+    # SOFTSPOKEN off the #else arm just throws
+    # "KOS or base OTs must be enabled" (Silent/SilentOtExtSender.cpp:180,
+    # SilentOtExtReceiver.cpp likewise). libOTe's own default for this knob is
+    # OFF (cmake/buildOptions.cmake:88), so task-4's knob set left silent OT
+    # linkable but unusable. Turning it ON lets genBaseCors bootstrap from
+    # SimplestOT (ENABLE_SIMPLESTOT, above) through SoftSpokenOT. See PINS.md.
+    set(ENABLE_SOFTSPOKEN_OT ON CACHE BOOL "SoftSpokenOT (silent OT base correlations)" FORCE)
     set(ENABLE_SILENT_VOLE ON CACHE BOOL "Silent VOLE" FORCE)
     set(ENABLE_REGULAR_DPF ON CACHE BOOL "oc::RegularDpf" FORCE)
 
