@@ -63,4 +63,8 @@ u64 Channel::bytes_sent() const {
     return bytes_sent_;
 }
 
+coproto::Socket& Channel::socket() {
+    return impl_->sock;
+}
+
 } // namespace sympsica

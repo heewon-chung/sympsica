@@ -7,6 +7,14 @@
 
 #include "sympsica/utils/field.hpp"
 
+// Forward declaration only (task-5-report.md Concern 1 / task-8 brief
+// requirement 1): coproto::Socket is a plain, non-template class (see
+// coproto/Socket/Socket.h), so this adds no include weight to consumers of
+// Channel — the coproto/boost/macoro headers stay pimpl'd into net.cpp.
+namespace coproto {
+class Socket;
+} // namespace coproto
+
 namespace sympsica {
 
 // Channel — coproto TCP wrapper (task-2 brief, Ruling 4; wired for real by
@@ -36,6 +44,20 @@ public:
     void recv(std::span<u8> data);
 
     u64 bytes_sent() const;
+
+    // Bridge to the pipeline layer (task-8 brief, requirement 1 / controller
+    // ruling): exposes the pimpl'd coproto::Socket by reference so a
+    // libOTe/coproto protocol (e.g. test/integration/ztgate_pipeline.hpp's
+    // `coproto::Socket&`-taking functions) can drive this Channel's
+    // connection directly, without Channel re-exposing a coroutine API of
+    // its own. IMPORTANT — bytes_sent()/ByteMeter do NOT observe traffic
+    // sent this way: bytes_sent_ is only incremented inside Channel::send(),
+    // and code that writes through socket() bypasses Channel::send()
+    // entirely. Communication measured over this path must instead come from
+    // coproto::Socket's own counters (bytesSent()/bytesReceived(), see
+    // coproto/Socket/Socket.h) or from a byte count taken at the socket
+    // layer by the caller.
+    coproto::Socket& socket();
 
 private:
     struct Impl;
