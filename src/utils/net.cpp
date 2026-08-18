@@ -1,7 +1,13 @@
 #include "sympsica/utils/net.hpp"
 
 #include "coproto/Socket/AsioSocket.h"
+// macoro/sync_wait.h and macoro/when_all.h use std::source_location/
+// basic_traceable but do not include macoro/trace.h themselves -- same gap
+// test/gates/kat_ztest.cpp's header comment documents and works around by
+// including macoro/trace.h first.
+#include "macoro/trace.h"
 #include "macoro/sync_wait.h"
+#include "macoro/when_all.h"
 
 #include "sympsica/utils/common.hpp"
 
@@ -30,6 +36,31 @@
 //     "the sanity cross-check against the external netns byte counter")
 //     depends on.
 //   - recv(data):   macoro::sync_wait(sock.recv(data)).
+//   - exchange(out, in) (task-15 brief -- deadlock-safe symmetric round,
+//     see net.hpp's doc comment for the hazard this retires): composes the
+//     send and recv AWAITABLES with macoro::when_all_ready(...) under ONE
+//     outer sync_wait, instead of two separate sync_wait calls run back to
+//     back. This is the difference that matters: when_all_ready's
+//     implementation (macoro/detail/when_all_awaitable.h,
+//     when_all_ready_awaitable::try_await -> start_tasks) calls .start() on
+//     BOTH the send sub-task and the recv sub-task SYNCHRONOUSLY, before the
+//     combined awaitable ever suspends -- i.e. sock.send(out)'s
+//     await_suspend and sock.recv(in)'s await_suspend both run (posting
+//     both operations onto coproto's SockScheduler) before sync_wait blocks
+//     the calling thread on anything. Concretely (verified against
+//     coproto/Socket/SocketScheduler.h): the recv operation gets registered
+//     into the socket's persistent, always-running receiveDataTask
+//     coroutine (started once at Channel construction, see
+//     SockScheduler::init) BEFORE this call blocks, so that background task
+//     starts actually draining the kernel socket's incoming bytes
+//     concurrently with the outstanding send -- exactly the fix for the
+//     hazard where the kernel recv buffer never gets drained because
+//     neither party has posted a recv() yet. Two sequential sync_wait calls
+//     (send() then recv(), the pre-task-15 pattern) cannot provide this:
+//     the second sync_wait (recv) is not even entered, let alone posted to
+//     the scheduler, until the first (send) has fully returned -- which is
+//     precisely the ordering that deadlocks when both parties fill their
+//     kernel send buffers before either posts a recv.
 //
 // bytes_sent() counts OUTGOING bytes only, incremented by the requested
 // send() size: coproto::Socket::send()/recv() here move raw byte spans with
@@ -58,6 +89,17 @@ void Channel::send(std::span<const u8> data) {
 
 void Channel::recv(std::span<u8> data) {
     macoro::sync_wait(impl_->sock.recv(data));
+}
+
+void Channel::exchange(std::span<const u8> out, std::span<u8> in) {
+    // ONE sync_wait over the combined when_all_ready awaitable -- see this
+    // file's top comment for why this (and not two sequential sync_waits)
+    // is what makes send and recv run concurrently instead of one blocking
+    // the other.
+    macoro::sync_wait(macoro::when_all_ready(impl_->sock.send(out), impl_->sock.recv(in)));
+    macoro::sync_wait(impl_->sock.flush());
+    bytes_sent_ += out.size();
+    ++sends_count_;
 }
 
 u64 Channel::bytes_sent() const {

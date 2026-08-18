@@ -43,6 +43,25 @@ public:
     void send(std::span<const u8> data);
     void recv(std::span<u8> data);
 
+    // exchange() — task-15-brief.md: the deadlock-safe form of a
+    // SYMMETRIC send-then-recv round (both parties transmit AND receive in
+    // the same round). Sends exactly out.size() bytes AND receives exactly
+    // in.size() bytes CONCURRENTLY -- neither direction blocks waiting for
+    // the other to finish first. out.size() and in.size() may differ.
+    //
+    // Why plain send()-then-recv() on both parties deadlocks at scale: send()
+    // is blocking (macoro::sync_wait, this class's own doc comment above).
+    // If both parties call send() before either calls recv(), and the
+    // combined outgoing payload exceeds the OS's kernel TCP buffers (loopback
+    // is ~128 KB by default; Phase-5's largest single symmetric-open payload
+    // is 655 KB, comfortably over that), each party's send() blocks waiting
+    // for its peer to drain the socket -- but the peer is itself still
+    // blocked inside its own send(), which never happens because neither
+    // side has posted a recv() yet. exchange() retires this hazard
+    // structurally: protocols where BOTH parties transmit in the same round
+    // MUST use it instead of send() immediately followed by recv().
+    void exchange(std::span<const u8> out, std::span<u8> in);
+
     u64 bytes_sent() const;
 
     // sends_count() — task-14-brief.md R-ROUNDS (additive accessor, same
@@ -54,6 +73,13 @@ public:
     // batched round count. Same known bypass as bytes_sent(): traffic that
     // goes through socket() directly (the ztgate pipeline/DKG code) does
     // NOT increment this counter.
+    //
+    // task-15-brief.md counter semantics: exchange() also counts as exactly
+    // ONE round -- it increments this counter by 1 (not 2), since "one
+    // exchange() call" IS "one communication round" for a symmetric-open,
+    // the same way "one send() call" is for the send-then-recv rounds this
+    // counter already tracks. exchange()'s recv half counts nothing, same
+    // as plain recv() never has.
     u64 sends_count() const;
 
     // Bridge to the pipeline layer (task-8 brief, requirement 1 / controller
