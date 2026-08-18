@@ -26,6 +26,7 @@ must match it bit-for-bit (state/mixing constants, 64-bit wraparound).
 from __future__ import annotations
 
 import argparse
+import itertools
 import sys
 from typing import Iterable, Sequence
 
@@ -122,6 +123,91 @@ def find_generator(p: int = P, factors: Sequence[int] = FP_MINUS_ONE_FACTORS) ->
         if all(pow(candidate, (p - 1) // q, p) != 1 for q in factors):
             return candidate
         candidate += 1
+
+
+# ---------------------------------------------------------------------------
+# task-13-brief.md controller ruling (binding): reference.py's independent
+# check for MIN-4 uses a pure-Python Bareiss (fraction-free) determinant mod
+# p over the LITERAL Hankel matrices -- NOT the m-index scheme Ref.minors()
+# implements -- so `Ref.minors_det()` below is a genuinely independent
+# cross-check of the schedule transcription, not a re-derivation of the same
+# formula. See _det_bareiss's docstring for why it can fall back to exact
+# Leibniz expansion on the (rare, MIN-3-specific) interior-zero-pivot case.
+# ---------------------------------------------------------------------------
+
+
+def _perm_sign(perm: tuple[int, ...]) -> int:
+    """Sign of a permutation via inversion-count parity (n <= 4 here, so the
+    naive O(n^2) count is trivial)."""
+    n = len(perm)
+    inversions = sum(1 for i in range(n) for j in range(i + 1, n) if perm[i] > perm[j])
+    return -1 if inversions % 2 else 1
+
+
+def _det_expansion(mat: list[list[int]]) -> int:
+    """Exact determinant via Leibniz permutation expansion: a full sum over
+    all n! permutations, pure multiply/add/subtract (fraction-free in the
+    strongest sense -- no division anywhere), unconditionally correct
+    including for singular/rank-deficient matrices. O(n!) is trivial for
+    n <= 4. Used as the fallback when _det_bareiss cannot continue past a
+    zero intermediate pivot (see its docstring) -- structurally unrelated to
+    the m-index cofactor SCHEDULE (a full permutation sum rather than a
+    hand-optimized 2x2-cofactor recursion), so it remains an independent
+    cross-check even on the rare path where it is the one actually
+    exercised.
+    """
+    n = len(mat)
+    total = 0
+    for perm in itertools.permutations(range(n)):
+        term = _perm_sign(perm)
+        for i in range(n):
+            term *= mat[i][perm[i]]
+        total += term
+    return total
+
+
+def _det_bareiss(mat: list[list[int]]) -> int | None:
+    """Fraction-free Bareiss elimination over the INTEGERS (the matrix's
+    canonical [0,p) representatives, treated as plain integers -- Bareiss's
+    theorem guarantees exact division at every step whenever every leading
+    principal minor encountered along the way is nonzero; reducing the
+    final integer determinant mod p afterwards gives the same value as
+    working mod p throughout, since the determinant is a polynomial in the
+    entries and reduction mod p commutes with it).
+
+    Returns None if elimination would need to divide by a ZERO leading
+    principal minor of `mat` -- an interior accidental zero, exactly MIN-3's
+    deliberately-constructed scenario. The classical UNPIVOTED Bareiss
+    algorithm cannot continue past this point without a "look-ahead"
+    extension (a documented limitation of the 1968 algorithm: row/column
+    pivoting to dodge a zero pivot would compute a DIFFERENT matrix's
+    determinant, not this matrix's leading principal minor, since leading
+    principal minors are defined w.r.t. a FIXED row/column order). Callers
+    fall back to _det_expansion, which is unconditionally correct, in that
+    case -- see Ref.minors_det().
+    """
+    n = len(mat)
+    a = [row[:] for row in mat]
+    prev = 1
+    for k in range(n - 1):
+        if prev == 0:
+            return None
+        for i in range(k + 1, n):
+            for j in range(k + 1, n):
+                num = a[k][k] * a[i][j] - a[i][k] * a[k][j]
+                q, r = divmod(num, prev)
+                assert r == 0, "Bareiss: exact-division invariant violated"
+                a[i][j] = q
+        prev = a[k][k]
+    return a[n - 1][n - 1]
+
+
+def _hankel4(d: Sequence[int], p: int = P) -> list[list[int]]:
+    """The 4x4 Hankel matrix H[i][j] = d_{i+j-1} (1-indexed), 0-indexed as
+    H0[i][j] = dd[i+j] where dd[0] = d_1 -- same construction Ref.minors()'s
+    docstring documents (D_4's bottom row is [d4,d5,d6,d7])."""
+    dd = [x % p for x in d]
+    return [[dd[i + j] for j in range(4)] for i in range(4)]
 
 
 class Ref:
@@ -378,6 +464,135 @@ class Ref:
         return t
 
     @staticmethod
+    def minors_det(d: Sequence[int], p: int = P) -> tuple[int, int, int, int]:
+        """Independent cross-check of Ref.minors(): D_1..D_4 computed as the
+        LITERAL leading principal minors of the 4x4 Hankel matrix via
+        fraction-free Bareiss elimination (falling back to exact Leibniz
+        expansion only when Bareiss hits a zero interior pivot -- see
+        _det_bareiss's docstring) -- NOT the m-index cofactor schedule.
+        task-13-brief.md controller ruling: this is what makes the
+        `minors() == minors_det()` self-checks genuinely independent of the
+        schedule transcription rather than just re-deriving the same
+        formula a different way.
+        """
+        assert len(d) == 7, "Ref.minors_det: d must be the full depth-7 vector (d_1..d_7)"
+        H = _hankel4(d, p)
+        Ds: list[int] = []
+        for k in range(1, 5):
+            sub = [row[:k] for row in H[:k]]
+            det = _det_bareiss(sub)
+            if det is None:
+                det = _det_expansion(sub)
+            Ds.append(det % p)
+        return tuple(Ds)  # type: ignore[return-value]
+
+    @staticmethod
+    def make_signed_set(state: int, t: int, p: int = P) -> tuple[list[int], list[int], int]:
+        """Draws t DISTINCT NONZERO field elements and t signs (alternating
+        +1/-1, starting with +1 -- matches the doc's {y(+), z(-)}-style
+        worked examples) from a splitmix64 stream seeded by `state`.
+        Returns (xs, signs, new_state) so callers can keep drawing from the
+        same stream across several sets.
+        """
+        used: set[int] = set()
+        xs: list[int] = []
+        for _ in range(t):
+            while True:
+                state, r = splitmix64_next(state)
+                x = r % p
+                if x != 0 and x not in used:
+                    used.add(x)
+                    xs.append(x)
+                    break
+        signs = [1 if i % 2 == 0 else -1 for i in range(t)]
+        return xs, signs, state
+
+    @staticmethod
+    def signed_syndromes(xs: Sequence[int], signs: Sequence[int], p: int = P,
+                          depth: int = 7) -> list[int]:
+        """d_k = sum s_i * x_i^k mod p, k = 1..depth -- MIN's notation
+        directly (.handoff/sympsica-test-vectors.md: "elements of F_101
+        written as integers; signed set difference {x_i, s_i} ... d_k = sum
+        s_i x_i^k"), NOT routed through sigma()/the generator -- x_i ARE
+        already field elements here, matching Ref.minors()'s own input
+        contract. Empty xs/signs (t=0) correctly yields an all-zero vector.
+        """
+        assert len(xs) == len(signs)
+        return [sum(s * pow(x, k, p) for x, s in zip(xs, signs)) % p for k in range(1, depth + 1)]
+
+    @staticmethod
+    def find_min3_example(seed: int, t: int, p: int = P) -> dict:
+        """Deliberately constructs a signed t-element set whose D_1 (= d_1)
+        is EXACTLY zero -- an interior accidental zero for any t >= 2 (since
+        tau=1 < t), while D_t stays nonzero, i.e. the true rank t_of()
+        recovers is still t despite the FIRST minor vanishing
+        (task-13-brief.md MIN-3; TV-F7's binding max-rule pin: a
+        first-zero-index rule would wrongly report t=0 here).
+
+        Construction (deterministic, not blind search): draw the first t-1
+        (element, sign) pairs freely from a seeded splitmix64 stream; SOLVE
+        the last element so the signed linear sum (= d_1) is exactly 0
+        (a sign is its own inverse in {+1,-1}, so
+        x_last = -sign_last * partial_sum mod p); retry (perturbing the
+        stream) only on the negligible-probability degenerate draws
+        (x_last colliding with an earlier element, or D_t itself vanishing
+        too). "found by reference.py search per Remark 1" (the brief's
+        wording) is satisfied by this retry loop, even though the core
+        d_1=0 property is enforced by direct construction rather than
+        trial-and-error over signs.
+
+        SIGN PATTERN, t=2 special case: for t >= 3 the first t-1 signs
+        alternate (+1,-1,+1,...) and the last sign continues the
+        alternation. For t=2 specifically this is IMPOSSIBLE without
+        colliding the two elements: with signs {+1(x0), -1(x1)} (the
+        design doc's own "{y(+), z(-)}" shape), forcing d1 = x0 - x1 = 0
+        algebraically forces x1 == x0, which is not a valid 2-element SET
+        (this is a genuine mathematical fact, not an implementation gap --
+        see task-13-report.md for the derivation). t=2 therefore uses
+        SAME-sign elements {+1(x0), +1(x1)}: d1 = x0 + x1 = 0 forces
+        x1 = -x0 mod p, which is always DISTINCT from x0 (p is odd, so
+        x0 == -x0 mod p only at x0 == 0, already excluded) -- a legitimate
+        signed set (both elements on the same symmetric-difference side,
+        |A\\B|=2, |B\\A|=0), still exercising the exact same D_1=0
+        interior-zero property MIN-3/TV-F7 needs.
+        """
+        assert 2 <= t <= 4, "find_min3_example: t must be in {2,3,4} (MIN-3's stated range)"
+        state = seed ^ 0x4D494E33 ^ (t << 32)  # 'MIN3'-ish salt, distinct per t
+        for _attempt in range(1000):
+            if t == 2:
+                prefix_signs = [1]
+                sign_last = 1
+            else:
+                prefix_signs = [1 if i % 2 == 0 else -1 for i in range(t - 1)]
+                sign_last = 1 if (t - 1) % 2 == 0 else -1
+
+            xs: list[int] = []
+            used: set[int] = set()
+            for _ in range(t - 1):
+                while True:
+                    state, r = splitmix64_next(state)
+                    x = r % p
+                    if x != 0 and x not in used:
+                        used.add(x)
+                        xs.append(x)
+                        break
+
+            partial = sum(s * x for s, x in zip(prefix_signs, xs)) % p
+            x_last = (-sign_last * partial) % p
+            if x_last == 0 or x_last in xs:
+                state ^= 0x9E3779B97F4A7C15
+                continue
+            xs_full = xs + [x_last]
+            signs_full = prefix_signs + [sign_last]
+            d = Ref.signed_syndromes(xs_full, signs_full, p)
+            D = Ref.minors(d, p)
+            assert D[0] == 0, "find_min3_example: construction failed to zero D_1"
+            if D[t - 1] != 0 and Ref.t_of(d, p) == t:
+                return {"xs": xs_full, "signs": signs_full, "d": d, "D": D, "t": t}
+            state ^= 0x9E3779B97F4A7C15
+        raise RuntimeError(f"find_min3_example: failed to construct a MIN-3 example for t={t}")
+
+    @staticmethod
     def count(A: Iterable[int], B: Iterable[int], g: int, p: int = P) -> tuple[int, int]:
         """count(A, B) -> (t, |A intersect B|) (design doc's reference.py
         contract). DEVIATION (documented, R-SIM/R-MIN scope note): the
@@ -624,6 +839,67 @@ class Ref:
         with open(out_path, "w") as f:
             f.write("\n".join(lines) + "\n")
 
+    @staticmethod
+    def emit_min_fixtures(seed: int, out_path: str) -> None:
+        """Emits MIN-3 (interior-accidental-zero, t in {2,3,4}) and MIN-4
+        (bulk random cross-check, t in {0..4}, 100 each) fixture rows for
+        one seed (task-13-brief.md, additive; existing format/README
+        discipline). Golden source for both: Ref.minors()/Ref.t_of() (the
+        m-index schedule, independently brute-force-verified at Phase 3 --
+        see _selftest_minors()), further cross-checked here against
+        Ref.minors_det() (the Bareiss/literal-Hankel-determinant path, NOT
+        the m-index scheme -- controller ruling) BEFORE anything is
+        written, so a schedule-transcription bug can never silently reach a
+        committed fixture.
+
+        Row format (one 13-token row per case, `min3`/`min4` key): `<n>
+        <d1..d7> <D1..D4> <expected_t>` -- x_i/s_i themselves are NOT
+        emitted (the consuming C++ test only needs the resulting syndrome
+        vector `d` and the golden D/t outputs; `n` documents how many
+        signed elements produced this row, purely informational).
+        """
+        def row_tokens(d: Sequence[int], D: Sequence[int], t: int, n: int) -> str:
+            toks = [str(n)] + [str(x) for x in d] + [str(x) for x in D] + [str(t)]
+            return " ".join(toks)
+
+        lines: list[str] = []
+        lines.append(f"# sympsica MIN fixture (generated) - format v{FIXTURE_FORMAT_VERSION}")
+        lines.append(f"# generator: python3 ref/reference.py emit-min --seed {seed} --out {out_path}")
+        lines.append(f"format {FIXTURE_FORMAT_VERSION}")
+        lines.append(f"seed {seed}")
+        lines.append(f"p {P}")
+
+        # --- MIN-3: interior accidental zero, t in {2,3,4} ----------------
+        min3_lines: list[str] = []
+        for t in (2, 3, 4):
+            ex = Ref.find_min3_example(seed, t)
+            d, D, tt = ex["d"], ex["D"], ex["t"]
+            assert D[0] == 0, "MIN-3 fixture row: D_1 must be the interior zero"
+            assert tt == t
+            assert Ref.minors_det(d) == D, f"MIN-3 (t={t}): minors() vs minors_det() disagree"
+            min3_lines.append(row_tokens(d, D, tt, len(ex["xs"])))
+        lines.append(f"min3_count {len(min3_lines)}")
+        for row in min3_lines:
+            lines.append("min3 " + row)
+
+        # --- MIN-4: bulk random cross-check, t in {0..4}, 100 each --------
+        min4_lines: list[str] = []
+        state = seed ^ 0x4D494E34
+        for t in range(0, 5):
+            for _trial in range(100):
+                xs, signs, state = Ref.make_signed_set(state, t)
+                d = Ref.signed_syndromes(xs, signs)
+                D = Ref.minors(d)
+                assert Ref.minors_det(d) == D, f"MIN-4 (t={t}): minors() vs minors_det() disagree"
+                tt = Ref.t_of(d)
+                min4_lines.append(row_tokens(d, D, tt, len(xs)))
+        lines.append(f"min4_count {len(min4_lines)}")
+        for row in min4_lines:
+            lines.append("min4 " + row)
+
+        with open(out_path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+
 
 def _selftest_minors() -> None:
     """MIN-2 worked row (task-11-brief.md R-MIN; .handoff/sympsica-test-
@@ -653,6 +929,28 @@ def _selftest_minors() -> None:
         D1x, D2x, _, _ = Ref.minors(d1, toy_p)
         assert D1x == x % toy_p and D2x == 0, f"MIN-1 self-check FAILED for x={x}"
 
+    # task-13-brief.md controller ruling (binding): minors()/minors_det()
+    # cross-check over a MIN-4-style sample (every t in {0..4}) PLUS the
+    # MIN-3 interior-zero construction, run unconditionally at import time
+    # (not just inside emit_min_fixtures) so this module can never be
+    # imported with a broken minors_det() without failing loudly. Smaller
+    # than the full 100-per-t fixture sample (20, not 100) to keep
+    # import-time cost negligible; emit_min_fixtures repeats the full check
+    # over its own larger sample before writing anything.
+    state = 0xC0FFEE ^ 0x4D494E34
+    for t in range(0, 5):
+        for _trial in range(20):
+            xs, signs, state = Ref.make_signed_set(state, t)
+            d = Ref.signed_syndromes(xs, signs)
+            got, want = Ref.minors_det(d), Ref.minors(d)
+            assert got == want, (
+                f"minors()/minors_det() self-check FAILED for t={t}: "
+                f"minors={want} minors_det={got}"
+            )
+    for t in (2, 3, 4):
+        ex = Ref.find_min3_example(0xC0FFEE, t)
+        assert Ref.minors_det(ex["d"]) == ex["D"], f"MIN-3 minors_det self-check FAILED for t={t}"
+
 
 _selftest_minors()  # module self-test (R-MIN): always runs, aborts via AssertionError on failure
 
@@ -675,6 +973,11 @@ def _cli(argv: list[str]) -> int:
     emit_sched.add_argument("--seed", type=int, required=True)
     emit_sched.add_argument("--out", type=str, required=True)
 
+    emit_min = sub.add_parser("emit-min",
+                               help="emit MIN-3/MIN-4 fixture rows (task-13-brief.md, W4.2)")
+    emit_min.add_argument("--seed", type=int, required=True)
+    emit_min.add_argument("--out", type=str, required=True)
+
     args = parser.parse_args(argv)
     if args.cmd == "emit":
         Ref.emit_fixtures(args.seed, args.out)
@@ -687,6 +990,10 @@ def _cli(argv: list[str]) -> int:
         return 0
     if args.cmd == "emit-schedule":
         Ref.emit_schedule_fixture(args.seed, args.out)
+        print(f"wrote {args.out} (seed={args.seed})")
+        return 0
+    if args.cmd == "emit-min":
+        Ref.emit_min_fixtures(args.seed, args.out)
         print(f"wrote {args.out} (seed={args.seed})")
         return 0
     return 1

@@ -117,8 +117,46 @@ that checks `Ref.minors()`/`Ref.t_of()` against the MIN-1/MIN-2 worked rows
 in `.handoff/sympsica-test-vectors.md`'s "minors / rank" section (toy field
 F_101, signed difference `{2(+), 3(-)}`): `D_1=100, D_2=95, D_3=0, D_4=0`,
 `t_of(...) == 2`. This is a pure-Python self-check — no fixture file is
-involved, and no C++ test consumes it (C++ `MIN-*` tests are Phase 4 per
-R-MIN, deliberately not written in Phase 3b).
+involved; `test/gates/kat_minors.cpp`'s `MIN2_ConcreteF101Row` test (Phase 4,
+task-13-brief.md) mirrors the same F_101 worked row through a plaintext
+recomputation helper (`MinorCircuit` is hardwired to the production `Fp`,
+p=2^61-1, so it cannot run over F_101 directly).
+
+## MIN-3/MIN-4 fixtures (`min0.fixture` .. `min2.fixture`, task-13-brief.md)
+
+Golden source: `ref/reference.py`'s `Ref.minors()`/`Ref.t_of()` (the m-index
+schedule — see `_selftest_minors()`), cross-checked against
+`Ref.minors_det()` (an INDEPENDENT literal-Hankel-determinant path via
+fraction-free Bareiss elimination, falling back to exact Leibniz expansion
+only when Bareiss hits a zero interior pivot — controller ruling, binding:
+"NOT the m-index scheme") before anything is written. Regenerate with:
+
+```
+python3 ref/reference.py emit-min --seed <N> --out test/fixtures/min<N>.fixture
+```
+
+`min0.fixture` .. `min2.fixture` were generated with exactly that command for
+`N` in `0..2` — three files, mirroring the schedule-fixture precedent above
+("2-3 small schedule fixtures") rather than the full `seed0..9` range used by
+the Phase-1 field/encoding family: `test/gates/kat_minors.cpp` consumes only
+`min0.fixture` for its MIN-3/MIN-4 assertions (500 MIN-4 cases already run
+the full two-party `MinorCircuit`/`BeaverEngine` protocol end-to-end over a
+real TCP `Channel`; running that 3x over would not add coverage, only
+runtime), so `min1.fixture`/`min2.fixture` exist for golden-source
+reproducibility/consistency with the project's seed convention but are not
+separately wired into the C++ suite.
+
+| key | values | meaning |
+|---|---|---|
+| `seed` | `N` | the `--seed` this file was generated with |
+| `min3_count` | `3` | number of `min3` rows (one per `t` in `{2,3,4}`) |
+| `min3` | `<n> <d1..d7> <D1..D4> <expected_t>` | one `Ref.find_min3_example(seed, t)` row: `n` signed elements were drawn (informational only — the C++ side consumes only the resulting syndrome vector `d`), `D_1` is always `0` (the deliberate interior zero — MIN-3/TV-F7's max-rule pin), `expected_t` is `Ref.t_of(d)` (must equal `t`) |
+| `min4_count` | `500` | number of `min4` rows (`t` in `{0..4}`, 100 each) |
+| `min4` | `<n> <d1..d7> <D1..D4> <expected_t>` | one random signed set per row (`Ref.make_signed_set`), same row shape as `min3`; `expected_t` is the golden `Ref.t_of(d)` the C++ side's `MinorCircuit::eval` + `t_of()` output must match exactly |
+
+x_i/s_i (the underlying signed elements) are NOT stored on the wire — only
+the resulting syndrome vector `d`, since that is all `MinorCircuit::eval`
+(and `Ref.minors`/`Ref.minors_det`) ever consume.
 
 ## Pinned PRNG: splitmix64
 
