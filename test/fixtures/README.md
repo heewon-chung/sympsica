@@ -1,7 +1,22 @@
-# test/fixtures/ — Phase-1 KAT fixtures
+# test/fixtures/ — KAT fixtures
 
-Golden source: `ref/reference.py` (pure Python, bigints). Every file here is
-generated, never hand-edited. Regenerate with:
+Two families live here, with different golden sources:
+
+- **Phase-1 field/encoding fixtures** (`seed0.fixture` .. `seed9.fixture`,
+  `generator_g.txt`) — golden source `ref/reference.py`, described below.
+- **Phase-2 protocol fixtures** (`zt5_dkg61.fixture`) — no Python golden
+  exists (there is no reference implementation of libOTe's interactive
+  `RegularDpf` keyGen), so these are *recorded* from the first green run of
+  the test that consumes them, which is what the task briefs call
+  `[POST-GATE]`. Each such file carries its own header explaining exactly how
+  to regenerate it and on which build variant it was recorded; see
+  `zt5_dkg61.fixture`. The format (`# comments` plus `<key> <value...>` rows,
+  read by `test/utils/fixture_support.hpp`) is shared with the Phase-1 files.
+
+## Phase-1 fixtures
+
+Golden source: `ref/reference.py` (pure Python, bigints). Every Phase-1 file
+here is generated, never hand-edited. Regenerate with:
 
 ```
 python3 ref/reference.py emit --seed <N> --out test/fixtures/seed<N>.fixture

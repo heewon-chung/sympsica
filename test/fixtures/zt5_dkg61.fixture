@@ -1,0 +1,47 @@
+# sympsica ZT-5 goldens — distributed DPF key generation at 61 bits (W2.1 step 5)
+# format: the same line-based "key value..." shape as the Phase-1 seed*.fixture
+# files (see test/fixtures/README.md), read by test/utils/fixture_support.hpp.
+#
+# Unlike the Phase-1 fixtures these rows have NO Python golden source: there is
+# no reference implementation of libOTe's interactive RegularDpf keyGen. They
+# are RECORDED from the first green run of
+#   integration.ZtGatePipeline.ZT5_DkgAt61Bits
+# on the build variant named by `tag` below, which is what [POST-GATE] means in
+# the task-5 brief. To regenerate, run that test: it prints every row it
+# computes as `zt5 <seed> <r> <share_digest> <recon_digest>` on stdout, in
+# order, whether or not the comparison passes.
+#
+# Columns of a `zt5` row:
+#   seed          — the run's PRNG seed (party R uses block(seed,0), S block(seed,1))
+#   r             — the accepted logical mask r = r_R XOR r_S, as an integer
+#   share_digest  — FNV-1a over, for every one of the 4*2^16 leaves: party 0's
+#                   raw F_p share, party 1's raw F_p share, and both tag bits.
+#                   TRANSCRIPT-dependent: it pins the actual DPF key material,
+#                   so it catches any drift in libOTe's keyGen, in the silent-OT
+#                   pool feeding it, or in CoeffCtxFp61.
+#   recon_digest  — FNV-1a over the RECONSTRUCTED value and tag of every leaf.
+#                   Mathematically determined (1 at the active leaf, 0
+#                   elsewhere), hence portable by construction.
+#
+# `tag` records the build variant the digests were recorded on, because
+# CMakeLists.txt derives ENABLE_SSE from the host architecture and that selects
+# which libOTe code paths compile. share_digest SHOULD still be portable — every
+# step is exact integer/AES arithmetic seeded from fixed PRNG seeds, with no
+# floating point and no thread-count dependence (silent OT runs single-threaded)
+# — but that has only been VERIFIED on the tagged variant. The Linux/x86 leg is
+# unverified here (it is Task 8 / the AWS leg's job); if share_digest diverges
+# there while recon_digest still matches, the divergence is in libOTe's
+# arch-specific code paths, not in this pipeline, and the fix is to record a
+# second tagged set of rows rather than to relax the check.
+format 1
+tag arm64-nosse
+domain 65536
+num_points 4
+zt5 0 15458130772355002 1781344865116801613 2094893528438900733
+zt5 1 779871122590035184 3544529244379380399 5976150381805668861
+zt5 2 1092673996342980394 14690265592744655441 14600403497099982797
+zt5 3 446455522420466017 59468408583065159 2632387665357688797
+zt5 4 1652564973126982044 14036287742333843065 16147988885925514429
+zt5 5 371489256052942171 3304877837440511393 5032835049735108301
+zt5 6 403468191995462136 3443786960840314487 16971011284877322029
+zt5 7 1376233292255474441 17494842079376875645 1946069906623619453
