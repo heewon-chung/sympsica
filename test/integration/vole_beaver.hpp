@@ -24,12 +24,21 @@
 // A HARD API CONSTRAINT (found while implementing, not stated in the brief):
 // `delta` is a SCALAR shared across the WHOLE vector-length call — NoisyVole
 // gives a "scalar-times-vector" correlation (one y, many x[j]'s), NOT an
-// elementwise Hadamard product of two independently-varying vectors. See
-// beaver_triples() in vole_beaver.cpp for how this shapes the Beaver-triple
-// batching (and the report's "OLE call granularity" section for the
-// consequence: only the Receiver's per-triple secrets end up independent
-// across the batch; the Sender's are one shared scalar pair for the whole
-// batch).
+// elementwise Hadamard product of two independently-varying vectors.
+//
+// CONTROLLER RULING (task-6 fix round 1, after the first report flagged this
+// as Concern 1): a single batched call per cross term — where the Sender's
+// per-triple secret would be one shared scalar across the whole 10^4-triple
+// batch — is NOT acceptable for Phase-5 consumption; Setup's cost model
+// ("noisy-VOLE Gilboa, 61 OTs/product") requires per-triple independent
+// correlations on BOTH sides. `beaver_triples()` in vole_beaver.cpp
+// therefore calls `ole_receive`/`ole_send` with a length-1 vector ONCE PER
+// TRIPLE PER CROSS TERM (2 calls/triple, 61 OTs/call, 122 OTs/triple total)
+// rather than batching the whole triple count into one call per cross term.
+// `ole_receive`/`ole_send` themselves are unchanged and still batch freely
+// when the caller wants a single shared `y` — see
+// `Vole61.OlePrimitiveCorrectnessOver10000Correlations` in
+// kat_dkg_vole61.cpp, which validates exactly that (primitive-only) shape.
 //
 // A SECOND hard constraint: the raw-array overloads of
 // NoisyVoleSender::send/NoisyVoleReceiver::receive take pre-generated OT
@@ -88,19 +97,20 @@ macoro::task<> ole_send(Fp& y, std::vector<Fp>& v, oc::u64 n, oc::PRNG& prng,
 
 // One party's shares of a batch of `n` Beaver triples (a, b, c): once both
 // parties' shares are added elementwise, c[i] == a[i] * b[i] for every i.
-// See vole_beaver.cpp for exactly which of a/b/c end up independent per
-// triple versus a constant broadcast across the batch (an unavoidable
-// consequence of NoisyVole's single-delta-per-call shape) — also documented
-// in task-6-report.md's "Beaver assembly algebra" section.
+// EVERY entry of a/b/c is independently random per triple, on BOTH parties'
+// sides (per the controller ruling above) — also documented in
+// task-6-report.md's "Beaver assembly algebra" section.
 struct BeaverBatch {
     std::vector<Fp> a, b, c;
 };
 
-// Assemble `n` triples. Consumes 2 * kOlePerCallOts OTs from `pool`.
-// `corrupt_ct1_sign`: when true, skips the negation on the FIRST cross
-// term's Sender share (see ole_send's `negate`) — the deliberate convention-
-// error negative test (W2.2 requirement 5's "single... convention error"
-// bullet); every positive caller leaves it false.
+// Assemble `n` triples, each from its own pair of length-1 NoisyVole calls
+// (per the controller ruling above). Consumes n * 2 * kOlePerCallOts OTs
+// from `pool`. `corrupt_ct1_sign`: when true, skips the negation on the
+// FIRST cross term's Sender share for EVERY triple (see ole_send's
+// `negate`) — the deliberate convention-error negative test (W2.2
+// requirement 5's "single... convention error" bullet); every positive
+// caller leaves it false.
 macoro::task<> beaver_triples(Role role, oc::u64 n, oc::PRNG& prng, ztgate::OtPool& pool,
                                coproto::Socket& sock, BeaverBatch& out,
                                bool corrupt_ct1_sign = false);

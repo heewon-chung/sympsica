@@ -82,47 +82,48 @@ macoro::task<> beaver_triples(Role role, oc::u64 n, oc::PRNG& prng, ztgate::OtPo
     if (n == 0)
         co_return;
 
+    // Controller ruling (task-6 fix round 1): each triple gets its own pair
+    // of length-1 NoisyVole calls (2 * kOlePerCallOts OTs), so every entry
+    // of a/b/c below is independent per triple on BOTH parties' sides — no
+    // batch-wide sharing of any secret. See vole_beaver.hpp's header comment
+    // for why this precludes the earlier single-batched-call design.
     if (role == Role::Receiver) {
-        // R's own per-triple secrets: independent, freely sampled. This is
-        // the half of the batch that NoisyVole's single-delta-per-call shape
-        // leaves genuinely independent (see the header comment and the
-        // report's "OLE call granularity" section).
         for (oc::u64 i = 0; i < n; ++i) {
-            out.a[i] = Fp::from_u64(prng.get<oc::u64>());
-            out.b[i] = Fp::from_u64(prng.get<oc::u64>());
+            // R's own per-triple secrets: independent, freely sampled.
+            Fp a_R = Fp::from_u64(prng.get<oc::u64>());
+            Fp b_R = Fp::from_u64(prng.get<oc::u64>());
+            out.a[i] = a_R;
+            out.b[i] = b_R;
+
+            std::vector<Fp> x_a{a_R};
+            std::vector<Fp> x_b{b_R};
+
+            // cross term 1: u1 + v1 == a_R[i] * b_S[i]   (R supplies x = a_R[i])
+            auto ot1 = pool.take(kOlePerCallOts);
+            std::vector<Fp> u1;
+            co_await ole_receive(x_a, u1, prng, ot1, sock);
+
+            // cross term 2: u2 + v2 == b_R[i] * a_S[i]   (R supplies x = b_R[i])
+            auto ot2 = pool.take(kOlePerCallOts);
+            std::vector<Fp> u2;
+            co_await ole_receive(x_b, u2, prng, ot2, sock);
+
+            out.c[i] = a_R.mul(b_R).add(u1[0]).add(u2[0]);
         }
-
-        // cross term 1: u1[i] + v1[i] == a_R[i] * b_S   (R supplies x = a_R)
-        auto ot1 = pool.take(kOlePerCallOts);
-        std::vector<Fp> u1;
-        co_await ole_receive(out.a, u1, prng, ot1, sock);
-
-        // cross term 2: u2[i] + v2[i] == b_R[i] * a_S   (R supplies x = b_R)
-        auto ot2 = pool.take(kOlePerCallOts);
-        std::vector<Fp> u2;
-        co_await ole_receive(out.b, u2, prng, ot2, sock);
-
-        for (oc::u64 i = 0; i < n; ++i)
-            out.c[i] = out.a[i].mul(out.b[i]).add(u1[i]).add(u2[i]);
     } else {
-        Fp b_S, a_S;
-        std::vector<Fp> v1, v2;
-
-        auto ot1 = pool.take(kOlePerCallOts);
-        co_await ole_send(b_S, v1, n, prng, ot1, sock, /*negate=*/!corrupt_ct1_sign);
-
-        auto ot2 = pool.take(kOlePerCallOts);
-        co_await ole_send(a_S, v2, n, prng, ot2, sock, /*negate=*/true);
-
-        // S's per-triple secrets are the SAME scalar for the whole batch —
-        // the direct consequence of NoisyVole's single delta per call (see
-        // header comment). Broadcast so out.a/out.b still carry one entry
-        // per triple for callers that reconstruct a[i]/b[i] per triple.
-        Fp ab_S = a_S.mul(b_S);
         for (oc::u64 i = 0; i < n; ++i) {
+            Fp b_S, a_S;
+            std::vector<Fp> v1, v2;
+
+            auto ot1 = pool.take(kOlePerCallOts);
+            co_await ole_send(b_S, v1, 1, prng, ot1, sock, /*negate=*/!corrupt_ct1_sign);
+
+            auto ot2 = pool.take(kOlePerCallOts);
+            co_await ole_send(a_S, v2, 1, prng, ot2, sock, /*negate=*/true);
+
             out.a[i] = a_S;
             out.b[i] = b_S;
-            out.c[i] = ab_S.add(v1[i]).add(v2[i]);
+            out.c[i] = a_S.mul(b_S).add(v1[0]).add(v2[0]);
         }
     }
 }

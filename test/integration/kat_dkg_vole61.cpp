@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <string>
@@ -564,11 +565,16 @@ TEST(ZtGatePipeline, ZT5_DkgAt61Bits)
 // derivation and the "OLE call granularity" accounting.
 // ---------------------------------------------------------------------------
 
-// OLE correctness: 10^4 random correlations from ONE NoisyVole call (the
-// call granularity NoisyVole's API allows — see vole_beaver.hpp). u[i]+v[i]
-// must reconstruct x[i]*y for every i, with y the single Sender-side value
-// this call produced.
-TEST(Vole61, OleCorrectnessOver10000Correlations)
+// PRIMITIVE-ONLY scope (controller ruling, task-6 fix round 1): this test
+// validates that oc::NoisyVoleSender/Receiver at 61 bits produces a correct,
+// canonical correlation — u[i]+v[i] == x[i]*y for every i, with y the single
+// Sender-side value ONE NoisyVole call produces when batched over a 10^4-
+// length vector (the call granularity NoisyVole's API allows — see
+// vole_beaver.hpp). It does NOT validate Beaver-triple structure: `y` here
+// is deliberately the SAME value across the whole 10^4 sample, which is
+// exactly the shape the Beaver-assembly leg below (BeaverTriplesCorrectness...)
+// must NOT have — see that test and vole_beaver.hpp's header comment.
+TEST(Vole61, OlePrimitiveCorrectnessOver10000Correlations)
 {
     constexpr u64 kN = 10000;
 
@@ -603,17 +609,21 @@ TEST(Vole61, OleCorrectnessOver10000Correlations)
     EXPECT_EQ(mismatches, 0u);
 }
 
-// Beaver correctness: assemble 10^4 triples from 2 batched NoisyVole calls
-// (one per cross term, per vole_beaver.hpp's beaver_triples), reconstruct
-// (a, b, c) for every triple, and assert c == a*b for ALL. Also does the
-// (non-gating) distribution-sanity check: first two moments of reconstructed
-// `a` over the sample, logged to stderr.
+// Beaver correctness: assemble 10^4 triples, each from its OWN pair of
+// length-1 NoisyVole calls (controller ruling, task-6 fix round 1 — see
+// vole_beaver.hpp's header comment: 2 cross-term products/triple x 61
+// OTs/product = 122 OTs/triple, so every triple's shares are independent on
+// BOTH sides, not just the Receiver's). Reconstructs (a, b, c) for every
+// triple and asserts c == a*b for ALL, plus the independence sanity check
+// this ruling exists to enforce (distinct-value count on the Sender's
+// per-triple a_S), plus the (non-gating) distribution-sanity check: first
+// two moments of reconstructed `a` over the sample, logged to stderr.
 TEST(Vole61, BeaverTriplesCorrectnessOver10000Triples)
 {
     constexpr u64 kN = 10000;
 
     TwoParty tp;
-    tp.fill_pool(2 * zvole::kOlePerCallOts);
+    tp.fill_pool(kN * 2 * zvole::kOlePerCallOts);
 
     std::array<oc::PRNG, 2> prng{oc::PRNG(oc::block(22, 0)), oc::PRNG(oc::block(22, 1))};
     std::array<zvole::BeaverBatch, 2> out;
@@ -645,6 +655,26 @@ TEST(Vole61, BeaverTriplesCorrectnessOver10000Triples)
     }
     EXPECT_EQ(mismatches, 0u);
 
+    // Independence sanity (GATING — controller ruling, task-6 fix round 1):
+    // this is the exact regression the ruling exists to catch. Under the
+    // rejected single-batched-call design, out[1].a (the Sender's per-triple
+    // a_S) was the SAME value for all 10^4 triples; under the per-triple
+    // design it must be (essentially) all-distinct — the birthday-bound
+    // collision probability over 10^4 draws from a ~2^61 space is
+    // astronomically small (~1e-11), so any large-scale collapse is a
+    // reintroduction of the batch-wide-sharing bug, not sampling noise.
+    {
+        std::vector<u64> a_S_values(kN);
+        for (u64 i = 0; i < kN; ++i) a_S_values[i] = out[1].a[i].v;
+        std::sort(a_S_values.begin(), a_S_values.end());
+        const auto distinct =
+            static_cast<u64>(std::unique(a_S_values.begin(), a_S_values.end()) - a_S_values.begin());
+        EXPECT_GE(distinct, kN - 5)
+            << "Sender-side a_S collapsed to " << distinct << " distinct values out of " << kN
+            << " -- this is the batch-wide-sharing regression the independence check guards "
+               "against (task-6 fix round 1)";
+    }
+
     // Distribution sanity (non-gating, report-only): mean/variance of the
     // reconstructed `a` share over the 10^4-triple sample against the
     // uniform-on-[0,P) expectation.
@@ -667,7 +697,7 @@ TEST(Vole61, MisorientedAssemblyBreaksReconstruction)
     constexpr u64 kN = 100;
 
     TwoParty tp;
-    tp.fill_pool(2 * zvole::kOlePerCallOts);
+    tp.fill_pool(kN * 2 * zvole::kOlePerCallOts);
 
     std::array<oc::PRNG, 2> prng{oc::PRNG(oc::block(23, 0)), oc::PRNG(oc::block(23, 1))};
     std::array<zvole::BeaverBatch, 2> out;
