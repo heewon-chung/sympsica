@@ -1,6 +1,21 @@
 cmake_minimum_required(VERSION 3.20)
 project(sympsica LANGUAGES CXX)
 
+# task-6 brief, addendum 9 (controller ruling): default to a Release build
+# when the user hasn't picked one. An unoptimised (-O0) default build is
+# ~50x slower for this project's protocol tests (task-5-report.md measured
+# 36.2 s vs 0.76 s for the integration suite) -- fine for W2.1's single test
+# file, but it would breach the ~60 s per-file SC budget by roughly the third
+# protocol-test file added, and any benchmark taken from a default build
+# would be meaningless for W8.0. Only fires when CMAKE_BUILD_TYPE is unset
+# (single-config generators); multi-config generators (Xcode, Ninja Multi-
+# Config) pick the config at build time and are unaffected.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
+    message(STATUS "CMAKE_BUILD_TYPE not set; defaulting to Release "
+                    "(override with -DCMAKE_BUILD_TYPE=Debug|RelWithDebInfo|... )")
+endif()
+
 # Workaround (see PINS.md): this host's AppleClang (21.0.0) is newer than the
 # compiler-feature tables shipped with cmake 4.4.2, which otherwise makes
 # BLAKE3's target_compile_features(... c_std_99 / cxx_std_20) calls fail at
@@ -207,9 +222,8 @@ endfunction()
 # test/utils/*.cpp -> sympsica_tests_utils, TEST_PREFIX "utils." (task-3-brief.md's
 # binding `ctest -R utils` selector keeps matching, unchanged).
 sympsica_add_test_target(utils utils)
-# test/integration/*.cpp -> sympsica_tests_integration, TEST_PREFIX "integration.".
-# No sources exist yet (only test/integration/.gitkeep), so this currently adds
-# no target at all — intentional per obligation (a): `ctest -R integration`
-# matches zero tests and (with --no-tests=error) fails loudly instead of
-# silently passing.
+# test/integration/*.cpp -> sympsica_tests_integration, TEST_PREFIX "integration."
+# (task-6 brief, addendum 10(i): sources now exist under test/integration/;
+# the original "no sources exist yet" comment describing obligation (a)'s
+# guard is stale and has been removed).
 sympsica_add_test_target(integration integration)
