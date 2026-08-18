@@ -21,10 +21,18 @@ endif()
 # BLAKE3's target_compile_features(... c_std_99 / cxx_std_20) calls fail at
 # generate time with "No known features for <lang> compiler". Seed the known
 # feature lists as CACHE entries before the C language is enabled (which
-# happens later, inside FetchContent_MakeAvailable(blake3 ...)). Gated to
-# AppleClang only so other toolchains (e.g. the gcc:13 Linux leg) keep using
-# cmake's normal, already-working detection.
-if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+# happens later, inside FetchContent_MakeAvailable(blake3 ...)).
+#
+# UPDATE (task-9, Linux/x86-64 leg): this bug is NOT AppleClang-specific. It
+# reproduces identically on cmake 3.25.1 + GCC 13.4.0 on Linux (BLAKE3's
+# c/CMakeLists.txt enables ASM alongside C for its hand-written amd64 SIMD
+# sources, and CMake's generate-time feature resolution across a mixed
+# C+ASM(+CXX) target fails with a blank compiler id/version on that toolchain
+# too) -- it is compiler-generic, tied to the C+ASM target shape rather than
+# to any one vendor. Widened to also cover GNU; verified end-to-end
+# (configure + full build + 44/46 gates green) inside a linux/amd64 gcc:13
+# container. See task-9-report.md.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set(CMAKE_C_COMPILE_FEATURES "c_std_90;c_std_99;c_std_11;c_std_17;c_std_23"
         CACHE INTERNAL "workaround: AppleClang 21 not yet in cmake's feature tables")
     set(CMAKE_CXX_COMPILE_FEATURES

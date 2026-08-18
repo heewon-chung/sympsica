@@ -45,3 +45,43 @@ zt5 4 1652564973126982044 14036287742333843065 16147988885925514429
 zt5 5 371489256052942171 3304877837440511393 5032835049735108301
 zt5 6 403468191995462136 3443786960840314487 16971011284877322029
 zt5 7 1376233292255474441 17494842079376875645 1946069906623619453
+
+# ============================================================================
+# SECOND tagged row-set (Task 9, Linux/x86-64 leg closure via colima+QEMU).
+# Recorded from integration.ZtGatePipeline.ZT5_DkgAt61Bits, run directly
+# inside a linux/amd64 gcc:13 container (colima/QEMU x86_64 emulation on
+# Apple Silicon), against sympsica_tests_integration built from commit
+# 7862c8b0b7a4db7d298e08126ff5b1ba16318c99 (branch sdd/phase3) with
+# SYMPSICA_SSE ON (default for x86-64, CMakeLists.txt's SYMPSICA_SSE option)
+# -- i.e. build_tag() == "x86_64-sse". Captured by temporarily patching a
+# SCRATCH COPY of this file's `tag` line to `x86_64-sse` (never the host
+# tree) so the test's build-variant ASSERT would pass and let the rows
+# print; the scratch tag edit was reverted afterward. See task-9-report.md
+# for the full procedure.
+#
+# VERDICT: every (seed, r, share_digest, recon_digest) row below is
+# BYTE-IDENTICAL to the arm64-nosse row for the same seed above -- only the
+# `tag` differs. This confirms libOTe's RegularDpf keyGen, the silent-OT
+# pool feeding it, and CoeffCtxFp61 all produce identical key material
+# bit-for-bit whether SSE is off (arm64) or on (x86_64); the ENABLE_SSE-
+# selected code paths inside libOTe/cryptoTools do not change this
+# pipeline's output, only (presumably) its performance. Fixture::one()/
+# ::all() (test/utils/fixture_support.hpp) are keyed by column name only,
+# not by `tag`, so this block is not a live, test-selectable alternative --
+# it is recorded here as pinned cross-architecture evidence, per the header
+# note above ("record a second tagged set of rows"). The rows the running
+# test actually checks against remain the arm64-nosse block above,
+# unchanged, positionally first.
+format 1
+tag x86_64-sse
+domain 65536
+num_points 4
+zt5 0 15458130772355002 1781344865116801613 2094893528438900733
+zt5 1 779871122590035184 3544529244379380399 5976150381805668861
+zt5 2 1092673996342980394 14690265592744655441 14600403497099982797
+zt5 3 446455522420466017 59468408583065159 2632387665357688797
+zt5 4 1652564973126982044 14036287742333843065 16147988885925514429
+zt5 5 371489256052942171 3304877837440511393 5032835049735108301
+zt5 6 403468191995462136 3443786960840314487 16971011284877322029
+zt5 7 1376233292255474441 17494842079376875645 1946069906623619453
+# ============================================================================
