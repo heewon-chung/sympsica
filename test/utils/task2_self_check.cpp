@@ -173,11 +173,10 @@ TEST(Task2SelfCheck, CoeffCtxFp61Basic) {
     EXPECT_EQ(from_block, Fp::from_u64(~0ull));
 }
 
-// net.hpp/net.cpp: Ruling 4's stub — Channel's constructor is REQUIRED to
-// abort (SYMPSICA_REQUIRE(false, ...)) until Phase 2 wires coproto's TCP
-// backend (see task-2-report.md's "Concerns" for why). Verified via death
-// test rather than a live loopback smoke test, which this stub cannot
-// support.
-TEST(Task2SelfCheck, ChannelStubAborts) {
-    EXPECT_DEATH({ Channel ch("127.0.0.1:0", true); }, "net: wired at Phase 2");
-}
+// net.hpp/net.cpp: Ruling 4's stub (Channel's constructor aborting via
+// SYMPSICA_REQUIRE(false, "net: wired at Phase 2")) was retired by task-4,
+// obligation (b), which wires a real coproto/boost-backed Channel — see
+// test/utils/net_smoke.cpp for the live loopback round-trip test that
+// replaces this stub-only death test (task-4-report.md, deviations: this
+// test asserted the now-removed stub behavior and could not be preserved
+// as-is once obligation (b) landed).

@@ -32,38 +32,47 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# W0.4: guard against a mismatched vendored libOTe checkout.
+# W0.4 (+ task-4 obligation (e)): guard against a mismatched vendored libOTe
+# and cryptoTools checkout. Both SHAs are read verbatim from PINS.md and
+# checked against the actual `git rev-parse HEAD` of the on-disk checkout;
+# a mismatch is a FATAL_ERROR at configure time either way.
 # ---------------------------------------------------------------------------
-file(STRINGS "${CMAKE_SOURCE_DIR}/PINS.md" _sympsica_pins_lines)
-set(_sympsica_pinned_libote_sha "")
-foreach(_line IN LISTS _sympsica_pins_lines)
-    if(_line MATCHES "^- libOTe: ([0-9a-f]+)")
-        set(_sympsica_pinned_libote_sha "${CMAKE_MATCH_1}")
-    endif()
-endforeach()
-if(_sympsica_pinned_libote_sha STREQUAL "")
-    message(FATAL_ERROR "PINS.md: could not find a 'libOTe: <sha>' entry")
-endif()
-
 find_package(Git REQUIRED)
-execute_process(
-    COMMAND ${GIT_EXECUTABLE} -C "${CMAKE_SOURCE_DIR}/vendor/libOTe" rev-parse HEAD
-    OUTPUT_VARIABLE _sympsica_actual_libote_sha
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    RESULT_VARIABLE _sympsica_libote_git_result
-    ERROR_QUIET
-)
-if(NOT _sympsica_libote_git_result EQUAL 0)
-    message(FATAL_ERROR
-        "vendor/libOTe is not a valid git checkout. Re-vendor per PINS.md: "
-        "git clone https://github.com/osu-crypto/libOTe vendor/libOTe && "
-        "git -C vendor/libOTe checkout ${_sympsica_pinned_libote_sha}")
-endif()
-if(NOT _sympsica_actual_libote_sha STREQUAL _sympsica_pinned_libote_sha)
-    message(FATAL_ERROR
-        "vendor/libOTe HEAD (${_sympsica_actual_libote_sha}) does not match the pinned SHA "
-        "(${_sympsica_pinned_libote_sha}) recorded in PINS.md. Re-vendor libOTe at the pinned SHA.")
-endif()
+
+function(sympsica_check_vendored_sha _pin_name _checkout_dir)
+    file(STRINGS "${CMAKE_SOURCE_DIR}/PINS.md" _sympsica_pins_lines)
+    set(_pinned_sha "")
+    foreach(_line IN LISTS _sympsica_pins_lines)
+        if(_line MATCHES "^- ${_pin_name}: ([0-9a-f]+)")
+            set(_pinned_sha "${CMAKE_MATCH_1}")
+        endif()
+    endforeach()
+    if(_pinned_sha STREQUAL "")
+        message(FATAL_ERROR "PINS.md: could not find a '${_pin_name}: <sha>' entry")
+    endif()
+
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} -C "${_checkout_dir}" rev-parse HEAD
+        OUTPUT_VARIABLE _actual_sha
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _git_result
+        ERROR_QUIET
+    )
+    if(NOT _git_result EQUAL 0)
+        message(FATAL_ERROR
+            "${_checkout_dir} is not a valid git checkout. Re-vendor ${_pin_name} per "
+            "PINS.md at the pinned SHA ${_pinned_sha}.")
+    endif()
+    if(NOT _actual_sha STREQUAL _pinned_sha)
+        message(FATAL_ERROR
+            "${_checkout_dir} HEAD (${_actual_sha}) does not match the pinned SHA "
+            "(${_pinned_sha}) recorded in PINS.md for '${_pin_name}'. Re-vendor at the "
+            "pinned SHA.")
+    endif()
+endfunction()
+
+sympsica_check_vendored_sha("libOTe" "${CMAKE_SOURCE_DIR}/vendor/libOTe")
+sympsica_check_vendored_sha("cryptoTools" "${CMAKE_SOURCE_DIR}/vendor/libOTe/cryptoTools")
 
 # ---------------------------------------------------------------------------
 # Dependencies fetched via FetchContent (exact tags; see PINS.md)
@@ -86,27 +95,61 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(blake3 googletest)
 
 # ---------------------------------------------------------------------------
+# task-4 obligation (c): wire vendored libOTe as a REAL, option-controlled
+# CMake dependency (add_subdirectory + link), replacing Phase 1's
+# header-only include-path shim into vendor/libOTe/out/build/osx. See
+# PINS.md ("New CMake knobs") for why each knob below is set.
+#
+# EXCLUDE_FROM_ALL: libOTe's own top-level CMakeLists.txt unconditionally
+# add_subdirectory()s libOTe_Tests/ and frontend/ in addition to libOTe/
+# itself; EXCLUDE_FROM_ALL propagates to every target defined transitively
+# under vendor/libOTe, so only `libOTe` (and its dependency `cryptoTools`) —
+# the targets our own `sympsica`/test binaries actually link — are part of
+# the default build; libOTe's own tests/frontend are configured (so a
+# configure-time error there would still surface) but never compiled.
+# ---------------------------------------------------------------------------
+option(SYMPSICA_BUILD_LIBOTE "Build vendored libOTe as a real CMake dependency" ON)
+if(SYMPSICA_BUILD_LIBOTE)
+    # W0.3's SYMPSICA_SSE maps onto libOTe/cryptoTools's own ENABLE_SSE.
+    set(ENABLE_SSE ${SYMPSICA_SSE} CACHE BOOL "compile with SSE instructions" FORCE)
+
+    # obligation (b), controller ruling order 1: let coproto's own thirdparty
+    # fetch supply boost (see PINS.md, "Boost" section, for the exact
+    # version/SHA256 that gets fetched+built).
+    set(ENABLE_BOOST ON CACHE BOOL "compile with BOOST networking integration" FORCE)
+    # Reuse the already-vendored out/{coproto,macoro,function2,libdivide,seal-4.1.1}
+    # checkouts (PINS.md) instead of requiring an installed find_package.
+    set(FETCH_AUTO ON CACHE BOOL "automatically download and build dependencies" FORCE)
+
+    # Base OTs + extensions needed by RegularDpf (DKG) + NoisyVole + SilentOT.
+    set(ENABLE_SIMPLESTOT ON CACHE BOOL "Chou-Orlandi base OT" FORCE)
+    set(ENABLE_SILENTOT ON CACHE BOOL "Silent OT extension" FORCE)
+    set(ENABLE_SILENT_VOLE ON CACHE BOOL "Silent VOLE" FORCE)
+    set(ENABLE_REGULAR_DPF ON CACHE BOOL "oc::RegularDpf" FORCE)
+
+    # LogVole is SEAL-backed and out of sympsica's scope; skip it even though
+    # SEAL is already vendored (overrides libOTe's own default of ON).
+    set(ENABLE_LOGVOLE OFF CACHE BOOL "LogVole (SEAL-backed, unused by sympsica)" FORCE)
+
+    add_subdirectory("${CMAKE_SOURCE_DIR}/vendor/libOTe" EXCLUDE_FROM_ALL)
+endif()
+
+# ---------------------------------------------------------------------------
 # sympsica static library
 # ---------------------------------------------------------------------------
 file(GLOB_RECURSE SYMPSICA_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/*.cpp")
 add_library(sympsica STATIC ${SYMPSICA_SOURCES})
 target_include_directories(sympsica PUBLIC "${CMAKE_SOURCE_DIR}/include")
 target_link_libraries(sympsica PUBLIC blake3)
-
-# W1.2: header-only include paths for include/sympsica/utils/coeff_ctx.hpp,
-# which hard-includes libOTe's CoeffCtx.h (mirrored into CoeffCtxFp61 — see
-# that header's top comment). These are HEADER paths only: no libOTe/
-# cryptoTools library target is built or linked here (that stays deferred to
-# Phase 2 per Phase 0's controller ruling 7). The two out/build/osx paths
-# point at config.h files generated as a side effect of PINS.md's documented
-# `python3 build.py --setup` re-vendor step (libOTe's own CMake configure
-# runs during that step even though --setup skips the actual build).
-target_include_directories(sympsica PUBLIC
-    "${CMAKE_SOURCE_DIR}/vendor/libOTe"
-    "${CMAKE_SOURCE_DIR}/vendor/libOTe/out/build/osx"
-    "${CMAKE_SOURCE_DIR}/vendor/libOTe/cryptoTools"
-    "${CMAKE_SOURCE_DIR}/vendor/libOTe/out/build/osx/cryptoTools"
-)
+if(SYMPSICA_BUILD_LIBOTE)
+    # `libOTe` is the actual target name add_subdirectory() defines (see
+    # vendor/libOTe/libOTe/CMakeLists.txt — no `oc::` ALIAS exists outside
+    # libOTe's own install()-exported package config, which this project
+    # does not use). Pulls in cryptoTools (incl. BitVector.cpp, needed by
+    # CoeffCtxFp61::binaryDecomposition per the W1.2 PINS.md note) and
+    # coproto/boost transitively via libOTe's own PUBLIC link.
+    target_link_libraries(sympsica PUBLIC libOTe)
+endif()
 
 # ---------------------------------------------------------------------------
 # party app: apps/ is owned by Phase 5; only wired once it exists.
@@ -117,19 +160,45 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/apps/party_main.cpp")
 endif()
 
 # ---------------------------------------------------------------------------
-# sympsica_tests
+# test targets — task-4 obligation (a): per-directory binaries instead of one
+# GLOB_RECURSE over all of test/, so `ctest -R integration` matches ONLY real
+# integration tests instead of silently matching nothing while still exiting
+# zero. A directory with no *.cpp sources gets NO target at all (guarded on
+# the GLOB result being non-empty) rather than an empty binary.
+#
+# BINDING: every gating `ctest` invocation in this project (CI, local
+# verification, task briefs' Success Criteria) MUST pass `--no-tests=error`
+# so that a test-selector regex matching zero tests is a hard failure
+# (nonzero exit) instead of a silently-green no-op. This is what makes
+# `ctest -R integration` fail loudly today (no integration tests exist yet)
+# instead of reporting false success.
 # ---------------------------------------------------------------------------
 enable_testing()
-file(GLOB_RECURSE SYMPSICA_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/test/*.cpp")
-add_executable(sympsica_tests ${SYMPSICA_TEST_SOURCES})
-target_link_libraries(sympsica_tests PRIVATE sympsica gtest gtest_main)
-# task-3-brief.md W1.8: fixture files are read by absolute path (resolved
-# against the source tree, not ctest's working directory).
-target_compile_definitions(sympsica_tests PRIVATE
-    SYMPSICA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-
 include(GoogleTest)
-# TEST_PREFIX "utils." makes every currently-discovered test (all of test/
-# is utils-layer content through Phase 1) match `ctest -R utils`, the
-# Phase-1 SC's binding selector (task-3-brief.md).
-gtest_discover_tests(sympsica_tests TEST_PREFIX "utils.")
+
+function(sympsica_add_test_target _dir_name _test_prefix)
+    file(GLOB _srcs CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/test/${_dir_name}/*.cpp")
+    if(_srcs STREQUAL "")
+        return()
+    endif()
+
+    set(_target "sympsica_tests_${_dir_name}")
+    add_executable(${_target} ${_srcs})
+    target_link_libraries(${_target} PRIVATE sympsica gtest gtest_main)
+    # task-3-brief.md W1.8: fixture files are read by absolute path (resolved
+    # against the source tree, not ctest's working directory).
+    target_compile_definitions(${_target} PRIVATE
+        SYMPSICA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
+    gtest_discover_tests(${_target} TEST_PREFIX "${_test_prefix}.")
+endfunction()
+
+# test/utils/*.cpp -> sympsica_tests_utils, TEST_PREFIX "utils." (task-3-brief.md's
+# binding `ctest -R utils` selector keeps matching, unchanged).
+sympsica_add_test_target(utils utils)
+# test/integration/*.cpp -> sympsica_tests_integration, TEST_PREFIX "integration.".
+# No sources exist yet (only test/integration/.gitkeep), so this currently adds
+# no target at all — intentional per obligation (a): `ctest -R integration`
+# matches zero tests and (with --no-tests=error) fails loudly instead of
+# silently passing.
+sympsica_add_test_target(integration integration)

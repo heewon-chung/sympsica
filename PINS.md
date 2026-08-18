@@ -19,16 +19,23 @@ this configure step, since that happens synchronously regardless of `--setup`).
 
 ## Vendored (git clone; checked out, git history intact on disk)
 
-Machine-readable pin consumed by the CMake W0.4 guard (`CMakeLists.txt`) — do not
-reformat this line, it is parsed verbatim:
+Machine-readable pins consumed by the CMake W0.4/task-4 guard (`CMakeLists.txt`) — do
+not reformat these lines, they are parsed verbatim:
 
 - libOTe: d644366cd6de1e47f8cfce49b372db90eeff0764
+- cryptoTools: 1a344ee4b7f4afaf39193eb413300ba17962b19e
 
 | Repo | SHA |
 |---|---|
 | libOTe (osu-crypto/libOTe) | `d644366cd6de1e47f8cfce49b372db90eeff0764` |
 
 ## Vendored via libOTe's own git submodule (pinned transitively by the libOTe SHA above)
+
+Task 4 (obligation (e)) extended the W0.4 configure-time guard to also check this
+checkout's HEAD against the `cryptoTools:` line above (`git -C
+vendor/libOTe/cryptoTools rev-parse HEAD`), verified exact at `1a344ee4b7f4afaf39193eb413300ba17962b19e`
+(same value already recorded here since Phase 0/1 — no re-vendor was needed, only the
+CMake check was missing). Mismatch => `FATAL_ERROR`, same as the libOTe check.
 
 | Repo | SHA |
 |---|---|
@@ -54,6 +61,45 @@ separate fetch), so it is already covered by the libOTe SHA above.
 |---|---|
 | BLAKE3 (official C implementation, BLAKE3-team/BLAKE3) | `1.8.6` (latest release tag as of 2026-08-16) |
 | googletest (google/googletest) | `v1.18.0` (latest release tag as of 2026-08-16) |
+
+## Boost (task-4 brief, obligation (b), controller ruling order 1)
+
+Fetched transitively by libOTe's own thirdparty machinery when the top-level
+`CMakeLists.txt` sets `ENABLE_BOOST=ON` + `FETCH_AUTO=ON` before
+`add_subdirectory(vendor/libOTe)`: `cryptoToolsDepHelper.cmake`'s `FIND_COPROTO`/
+`FETCH_COPROTO_IMPL` path pulls in `vendor/libOTe/out/coproto` (already vendored at
+the pinned SHA above) via `add_subdirectory`, which — because `COPROTO_ENABLE_BOOST`/
+`COPROTO_FETCH_BOOST` are propagated from `ENABLE_BOOST` — runs coproto's own
+`thirdparty/getBoost.cmake` at configure time. That script downloads and builds (via
+`bootstrap.sh` + `b2`, NOT CMake) the following exact Boost release, entirely
+independent of Homebrew:
+
+| Dependency | Version | Source | SHA256 |
+|---|---|---|---|
+| Boost (boost.org, official release tarball) | `1.90.0` | `https://archives.boost.io/release/1.90.0/source/boost_1_90_0.tar.bz2` | `49551aff3b22cbc5c5a9ed3dbc92f0e23ea50a0f7325b0d198b705e8ee3fc305` |
+
+Components built: `system, thread, atomic, filesystem, regex, date_time` (per
+`getBoost.cmake`'s `B2_ARGS`). Installed under
+`vendor/libOTe/out/install/osx` (`OC_THIRDPARTY_HINT`/`COPROTO_STAGE`), alongside the
+already-vendored SEAL/function2 installs. This is the "prefer coproto/libOTe's own
+boost integration" path from the controller ruling — the Homebrew fallback (ruling
+order 2) was **not** needed; the fetch-and-build succeeded on macOS/ARM inside the
+~45-minute bound (see task-4-report.md for the timed run).
+
+## New CMake knobs (task-4 brief, obligation (c)) — set via `CACHE ... FORCE` in the
+## top-level `CMakeLists.txt` before `add_subdirectory(vendor/libOTe)`
+
+| Knob | Value | Why |
+|---|---|---|
+| `SYMPSICA_BUILD_LIBOTE` | `ON` (default) | sympsica-local option gating the real libOTe build (vs. a future header-only/mock mode) |
+| `ENABLE_BOOST` | `ON` | required for coproto's TCP (`AsioSocket`) backend — obligation (b) |
+| `FETCH_AUTO` | `ON` | lets libOTe/cryptoTools's own dep helpers reuse the already-vendored `out/{coproto,macoro,function2,libdivide,seal-4.1.1}` checkouts instead of failing a `find_package` |
+| `ENABLE_SIMPLESTOT` | `ON` | Chou-Orlandi base OTs — spec-mandated (brief text), and `RegularDpf`'s `DpfMult` multiplier is built on top of base OTs |
+| `ENABLE_SILENTOT` | `ON` | Silent OT extension (needed transitively for `ENABLE_PPRF`, and for the SilentOT triples Phase 2 will use) |
+| `ENABLE_SILENT_VOLE` | `ON` | Silent VOLE (also sets `ENABLE_PPRF`) — NoisyVole is the non-silent core `SilentVole` composes with |
+| `ENABLE_REGULAR_DPF` | `ON` | `oc::RegularDpf` (the DKG protocol Phase 2/W2.x targets) — also pulls in `Dpf/SumDmpf.cpp` |
+| `ENABLE_LOGVOLE` | `OFF` (overriding libOTe's own default `ON`) | LogVole is SEAL-backed and out of scope for sympsica; turning it off avoids an unnecessary heavy dependency even though SEAL 4.1.1 is already vendored/built |
+| `ENABLE_SSE` | mirrors `SYMPSICA_SSE` (OFF on this host's arm64) | maps sympsica's existing architecture-conditional option onto libOTe/cryptoTools's own SSE knob, per the W0.3 comment's stated intent |
 
 ## `vendor/` git-ignore choice
 

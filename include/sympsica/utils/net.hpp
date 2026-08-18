@@ -1,6 +1,7 @@
 #ifndef SYMPSICA_UTILS_NET_HPP
 #define SYMPSICA_UTILS_NET_HPP
 
+#include <memory>
 #include <span>
 #include <string>
 
@@ -8,32 +9,37 @@
 
 namespace sympsica {
 
-// Channel — coproto TCP wrapper (task-2 brief, Ruling 4). send()/recv() are
-// blocking; bytes_sent() counts OUTGOING bytes only (design doc: Channel's
-// counter is the sanity cross-check against the external netns byte counter,
-// FT11).
+// Channel — coproto TCP wrapper (task-2 brief, Ruling 4; wired for real by
+// task-4, obligation (b), once the boost pin landed — see PINS.md). send()/
+// recv() are blocking; bytes_sent() counts OUTGOING bytes only (design doc:
+// Channel's counter is the sanity cross-check against the external netns
+// byte counter, FT11).
 //
-// STUB (task-2 brief, Ruling 4's stop clause): the vendored coproto Socket's
-// TCP backend (coproto/Socket/AsioSocket.h) hard-includes <boost/asio.hpp>
-// and <boost/asio/ssl.hpp>, neither vendored/pinned by Phase 0 nor added by
-// this task (see task-2-report.md, "Concerns", for the full finding). Every
-// method below aborts via SYMPSICA_REQUIRE(false, "net: wired at Phase 2")
-// until that dependency is wired in.
+// Backed by coproto::asioConnect(...)'s AsioSocket, driven synchronously via
+// macoro::sync_wait — see net.cpp's top comment for the full rationale. The
+// coproto/boost/macoro headers that requires are kept out of this header
+// (pimpl'd into net.cpp) so consumers of Channel do not have to pay for
+// them, mirroring coeff_ctx.hpp's rationale for splitting libOTe's
+// CoeffCtx.h out of field.hpp.
 class Channel {
 public:
     // Connects as server (listens) or client (dials), per `is_server`.
+    // `address` is coproto::asioConnect's own "host:port" address format.
     Channel(const std::string& address, bool is_server);
     ~Channel();
 
     Channel(const Channel&) = delete;
     Channel& operator=(const Channel&) = delete;
 
+    // Blocking send/recv of exactly data.size() bytes.
     void send(std::span<const u8> data);
     void recv(std::span<u8> data);
 
     u64 bytes_sent() const;
 
 private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
     u64 bytes_sent_ = 0;
 };
 

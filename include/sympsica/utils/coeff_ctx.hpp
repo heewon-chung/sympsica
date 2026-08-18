@@ -26,8 +26,11 @@
 // build itself is skipped by --setup).
 #include "libOTe/Tools/CoeffCtx.h"
 
+#include <cstddef>
+#include <iterator>
 #include <type_traits>
 
+#include "sympsica/utils/common.hpp"
 #include "sympsica/utils/field.hpp"
 
 namespace sympsica {
@@ -89,6 +92,64 @@ struct CoeffCtxFp61 : osuCrypto::CoeffCtxInteger {
     // 8 bytes (not a multiple of sizeof(block) == 16), so it takes the
     // generic byte-oriented branch (AND each byte against mask.get<u8>(0)).
     // Correct, just not micro-optimized — acceptable for this PoC.
+
+    // deserialize()/serialize(): OVERRIDDEN (task-4 brief, obligation (d) —
+    // CoeffCtx deserialize canonicality audit). Base class
+    // CoeffCtxInteger::deserialize (vendor/libOTe/libOTe/Tools/CoeffCtx.h) is
+    // a raw std::memcpy with NO range/reduction check whatsoever. The audit
+    // (task-4-report.md has the full trace) found three call sites in
+    // vendor/libOTe that route raw wire bytes through ctx.deserialize()
+    // straight into an F (= Fp here) value:
+    //   - NoisyVoleSender::send / NoisyVoleReceiver::recv (Vole/Noisy/*.h):
+    //     `co_await chl.recv(buffer); ctx.deserialize(buffer..., msg.begin())`
+    //     — the encrypted-share buffer arrives directly off the network.
+    //   - RegularDpf::implExpand (Dpf/RegularDpf.h): both the interactively
+    //     revealed `gamma` (`co_await sock.recv(buffer); ctx.deserialize(...)`)
+    //     and a DPF key's `mLeafVals` loaded via RegularDpfKey::fromBytes
+    //     (`ctx.deserialize(inputKey->mLeafVals..., gamma.begin())`) —
+    //     the latter is disk/wire-loaded key material, not itself
+    //     range-checked by fromBytes (which only copies raw bytes into the
+    //     mLeafVals u8 buffer; the F-typed decode happens at this
+    //     deserialize() call).
+    // Every one of those call sites goes through THIS ctx object, so
+    // overriding deserialize() here — not touching vendor/libOTe — closes
+    // the gap: any non-canonical (>= P) 64-bit pattern crossing the wire
+    // aborts via SYMPSICA_REQUIRE instead of silently becoming a Fp that
+    // violates field.hpp's stated invariant ("every Fp value produced by
+    // this class is the canonical representative in [0, P)"). ctx.fromBlock
+    // (used pervasively elsewhere in RegularDpf/NoisyVole for PRG-derived
+    // shares) is already safe: it goes through our fromBlock() override
+    // above, which reduces via Fp::from_u64's Mersenne fold. Tasks 5-6: call
+    // Fp values through this ctx (not a raw memcpy) on every value that has
+    // crossed the wire, precisely so this check fires.
+    template<typename SrcIter, typename DstIter>
+    void deserialize(SrcIter&& begin, SrcIter&& end, DstIter&& dstBegin) const {
+        osuCrypto::CoeffCtxInteger::deserialize(begin, end, dstBegin);
+
+        using SrcType = std::remove_reference_t<decltype(*begin)>;
+        using DstType = std::remove_reference_t<decltype(*dstBegin)>;
+        if constexpr (std::is_same_v<DstType, Fp>) {
+            auto srcN = std::distance(begin, end);
+            auto dstN = static_cast<std::size_t>(srcN) * sizeof(SrcType) / sizeof(DstType);
+            auto it = dstBegin;
+            for (std::size_t i = 0; i < dstN; ++i, ++it) {
+                SYMPSICA_REQUIRE((*it).v < Fp::P,
+                    "CoeffCtxFp61::deserialize: non-canonical Fp value (>= P) crossed the wire");
+            }
+        }
+    }
+
+    template<typename SrcIter, typename DstIter>
+    void serialize(SrcIter&& begin, SrcIter&& end, DstIter&& dstBegin) const {
+        using SrcType = std::remove_reference_t<decltype(*begin)>;
+        if constexpr (std::is_same_v<SrcType, Fp>) {
+            for (auto it = begin; it != end; ++it) {
+                SYMPSICA_REQUIRE((*it).v < Fp::P,
+                    "CoeffCtxFp61::serialize: refusing to serialize a non-canonical Fp value");
+            }
+        }
+        osuCrypto::CoeffCtxInteger::serialize(begin, end, dstBegin);
+    }
 };
 
 } // namespace sympsica
