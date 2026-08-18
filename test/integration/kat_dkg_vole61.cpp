@@ -324,7 +324,7 @@ TEST(ZtGatePipeline, MaskDigitAndB2ACorrectnessOver32Gates)
 }
 
 // ---------------------------------------------------------------------------
-// ZT-5 [POST-GATE] — DKG at 61 bits
+// Full-domain expansion — shared helper, then the forced-mask and ZT-5 tests
 // ---------------------------------------------------------------------------
 
 struct ExpandResult {
@@ -375,6 +375,91 @@ ExpandResult expand_both(zt::ZtGateOut& g0, zt::ZtGateOut& g1)
         sympsica_test::digest_update(e.recon_digest, e.tags[0][idx] ^ e.tags[1][idx]);
     }
     return e;
+}
+
+// The other half of the W2.4 forced-mask contract. ForcedRejectedMaskIsResampled
+// covers the one mask that must NOT survive; this covers the case W2.4 actually
+// relies on — a forced mask that passes step 2 must reach the output as itself,
+// with every downstream product derived from that exact value rather than from a
+// resampled one. Boundary masks r in {0, 1, 2^61-2} are the values Task 8 will
+// inject: 0 makes every digit zero, 1 makes only the lowest digit non-zero, and
+// 2^61-2 = p-1 is the largest accepted mask (digits 0xFFFE, 0xFFFF, 0xFFFF,
+// 0x1FFF) — none of which random sampling would realistically produce.
+TEST(ZtGatePipeline, ForcedAcceptedMasksReachOutputUnchanged)
+{
+    const std::vector<u64> targets{0ull, 1ull, Fp::P - 1};
+    const u64 kGates = targets.size();
+
+    // Split each target non-trivially so neither party holds r in the clear.
+    const u64 s_half = 0x0AAAAAAAAAAAAAAAull & Fp::P;
+    std::array<std::vector<u64>, 2> forced;
+    for (auto r : targets) {
+        forced[0].push_back(r ^ s_half);
+        forced[1].push_back(s_half);
+    }
+
+    TwoParty tp;
+    tp.fill_pool(pool_size(kGates));
+
+    std::array<zt::PipelineOpts, 2> opts;
+    for (int p = 0; p < 2; ++p) {
+        opts[p].count = kGates;
+        opts[p].forced_mask_halves = forced[p];
+    }
+    std::array<oc::PRNG, 2> prng{oc::PRNG(oc::block(11, 0)), oc::PRNG(oc::block(11, 1))};
+    std::array<std::vector<zt::ZtGateOut>, 2> out;
+    std::array<zt::PipelineStats, 2> stats;
+    tp.run(opts, prng, out, stats);
+
+    // Nothing was rejected, so nothing was resampled and no extra OTs were drawn.
+    for (int p = 0; p < 2; ++p) {
+        EXPECT_EQ(stats[p].rejected, 0u);
+        EXPECT_EQ(stats[p].resample_rounds, 0u);
+        EXPECT_EQ(stats[p].ots_consumed, pool_size(kGates));
+    }
+
+    for (u64 g = 0; g < kGates; ++g) {
+        SCOPED_TRACE("target r = " + std::to_string(targets[g]));
+
+        // The central property: step 1's injected value survives steps 2-5
+        // untouched, on both sides.
+        ASSERT_EQ(out[0][g].mask_half, forced[0][g]);
+        ASSERT_EQ(out[1][g].mask_half, forced[1][g]);
+        const u64 r = out[0][g].mask_half ^ out[1][g].mask_half;
+        ASSERT_EQ(r, targets[g]);
+
+        // Step 4 and step 3 follow from the forced value, not from a resample.
+        const auto digits = zt::digit_split(r);
+        for (u64 j = 0; j < zt::kNumDigits; ++j)
+            EXPECT_EQ(out[0][g].digit_shares[j] ^ out[1][g].digit_shares[j], digits[j])
+                << "digit " << j;
+        EXPECT_LT(out[0][g].mask_share.v, Fp::P);
+        EXPECT_LT(out[1][g].mask_share.v, Fp::P);
+        EXPECT_EQ(out[0][g].mask_share.add(out[1][g].mask_share).v, Fp::from_u64(r).v);
+        EXPECT_EQ(Fp::from_u64(r).v, r);
+    }
+
+    // Step 5 on the two extreme boundary masks: r = 0 (all four digit points
+    // are 0) and r = p-1 (three digits saturated, top digit at its 13-bit max).
+    // ZT-5's sampled masks would essentially never hit either.
+    for (u64 g : {u64(0), kGates - 1}) {
+        SCOPED_TRACE("expand for r = " + std::to_string(targets[g]));
+        const auto digits = zt::digit_split(targets[g]);
+        auto e = expand_both(out[0][g], out[1][g]);
+        EXPECT_EQ(e.noncanonical, 0u);
+
+        u64 bad_value = 0, bad_tag = 0;
+        for (u64 k = 0; k < zt::kNumDigits; ++k) {
+            for (u64 i = 0; i < zt::kDomain; ++i) {
+                const u64 idx = k * zt::kDomain + i;
+                const u64 want = (i == digits[k]) ? 1u : 0u;
+                bad_value += (e.shares[0][idx].add(e.shares[1][idx]).v != want);
+                bad_tag += ((e.tags[0][idx] ^ e.tags[1][idx]) != want);
+            }
+        }
+        EXPECT_EQ(bad_value, 0u);
+        EXPECT_EQ(bad_tag, 0u);
+    }
 }
 
 TEST(ZtGatePipeline, ZT5_DkgAt61Bits)
