@@ -1,4 +1,5 @@
 build/
+build-*/
 vendor/
 
 # Local working documents (specs, plans, evidence, agent state) — never published

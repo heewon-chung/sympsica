@@ -135,6 +135,14 @@ FetchContent_MakeAvailable(blake3 googletest)
 # the default build; libOTe's own tests/frontend are configured (so a
 # configure-time error there would still surface) but never compiled.
 # ---------------------------------------------------------------------------
+# R-NOFILTER (task-11-brief.md): test-only flag that disables Update::apply's
+# entire three-stage step-1 filter (src/protocols/update.cpp's #ifdef
+# SYMPSICA_NO_FILTER region) so a SEPARATE build dir (build-nofilter/,
+# configured with -DSYMPSICA_NO_FILTER=ON) can demonstrate TV-F5. Defaults
+# OFF -- the default build (this one) MUST compile the flag off, per
+# R-NOFILTER's binding requirement.
+option(SYMPSICA_NO_FILTER "TEST-ONLY: disable Update::apply's step-1 filter (TV-F5 negative build)" OFF)
+
 option(SYMPSICA_BUILD_LIBOTE "Build vendored libOTe as a real CMake dependency" ON)
 if(SYMPSICA_BUILD_LIBOTE)
     # W0.3's SYMPSICA_SSE maps onto libOTe/cryptoTools's own ENABLE_SSE.
@@ -179,6 +187,9 @@ file(GLOB_RECURSE SYMPSICA_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/*.
 add_library(sympsica STATIC ${SYMPSICA_SOURCES})
 target_include_directories(sympsica PUBLIC "${CMAKE_SOURCE_DIR}/include")
 target_link_libraries(sympsica PUBLIC blake3)
+if(SYMPSICA_NO_FILTER)
+    target_compile_definitions(sympsica PRIVATE SYMPSICA_NO_FILTER)
+endif()
 if(SYMPSICA_BUILD_LIBOTE)
     # `libOTe` is the actual target name add_subdirectory() defines (see
     # vendor/libOTe/libOTe/CMakeLists.txt — no `oc::` ALIAS exists outside
@@ -266,10 +277,36 @@ sympsica_add_test_target(utils utils)
 # test/core/*.cpp -> sympsica_tests_core, TEST_PREFIX "core." (task-10-brief.md,
 # Phase 3a: core/{share,table,state,pools} + protocols/update). Also covers
 # Update's local-filter self-checks (task-10 brief: "do not create an empty
-# update target" -- Task 11's formal `update.` tests land here too, keeping
-# the binding `ctest -R 'core|update'` selector matching via the "core" arm
-# until then).
+# update target"). Task 11's formal `update.*` KATs now live in their own
+# test/protocols/ target below (design-tree-correct location), registered
+# with TEST_PREFIX "update." instead of "protocols." so the binding
+# `ctest -R 'core|update'` selector still matches -- see that target's own
+# comment for why.
 sympsica_add_test_target(core core)
+
+# R-GREP (task-11-brief.md): grep-guard asserting core/share.hpp's open()
+# has no call sites outside test/** and core/share.hpp/.cpp itself (see
+# test/core/grep_guard_no_open_callsites.sh for the full rationale). A
+# native `add_test` (not a gtest case) invoking the script directly, named
+# with the "core." prefix by hand so `ctest -R core` catches it exactly
+# like every gtest_discover_tests-registered test in this directory.
+add_test(NAME core.GrepGuard_NoOpenCallSitesOutsideShare
+    COMMAND sh "${CMAKE_SOURCE_DIR}/test/core/grep_guard_no_open_callsites.sh" "${CMAKE_SOURCE_DIR}")
+
+# test/protocols/*.cpp -> sympsica_tests_protocols, TEST_PREFIX "update." --
+# task-11-brief.md requirement 1: the design tree names
+# test/protocols/kat_update.cpp, but the per-directory-name TEST_PREFIX
+# convention above would give "protocols." (capital-agnostic mismatch: the
+# binding SC selector `ctest -R 'core|update'` is case-sensitive and
+# "protocols.Update.UPD1_..." does not contain lowercase "update"). This
+# helper's TWO arguments are independent (dir_name for the glob path/target
+# name, test_prefix for TEST_PREFIX) precisely to allow this decoupling --
+# passing "update" as the second argument makes every discovered test name
+# start with "update." (e.g. "update.Update.UPD1_..."), which DOES contain
+# "update" and keeps the plan's selector matching with no changes to test
+# suite/case naming.
+sympsica_add_test_target(protocols update)
+
 # test/integration/*.cpp -> sympsica_tests_integration, TEST_PREFIX "integration."
 # (task-6 brief, addendum 10(i): sources now exist under test/integration/;
 # the original "no sources exist yet" comment describing obligation (a)'s

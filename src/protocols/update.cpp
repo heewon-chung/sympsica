@@ -50,6 +50,19 @@ void Update::apply(PartyState& st, std::span<const u64> I, std::span<const u64> 
     // state) depends on dedup being inside the disabled region, not outside
     // it.
     // =========================================================================
+#ifdef SYMPSICA_NO_FILTER
+    // R-NOFILTER (task-11-brief.md, TEST-ONLY -- NEVER defined in the
+    // default build; CMake option SYMPSICA_NO_FILTER defaults OFF): the
+    // entire three-stage filter above is skipped -- I/D are used directly,
+    // unfiltered, duplicates and all. This exists solely so a second,
+    // separately-configured build dir (build-nofilter/) can demonstrate
+    // TV-F5: without this filter, a duplicate/redundant edit corrupts
+    // state (double-applies a duplicate insert, etc.) instead of being a
+    // clean no-op, and the UPD-3/UPD-4/UPD-5 KATs (which assert the
+    // FILTERED/correct behavior) fail against that corruption.
+    std::vector<u64> i_prime(I.begin(), I.end());
+    std::vector<u64> d_prime(D.begin(), D.end());
+#else
     std::vector<u64> i_dedup = dedup(I);
     std::vector<u64> d_dedup = dedup(D);
 
@@ -66,6 +79,7 @@ void Update::apply(PartyState& st, std::span<const u64> I, std::span<const u64> 
     for (u64 x : d_dedup) {
         if (my_set.count(x) && !i_set.count(x)) d_prime.push_back(x);
     }
+#endif
     // ======================================================= END STEP 1 FILTER
 
     for (u64 x : i_prime) {
