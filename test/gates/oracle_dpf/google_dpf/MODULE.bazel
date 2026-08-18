@@ -1,0 +1,33 @@
+"""sympsica's ZT-4 part (b) driver — task-7-brief.md, W2.3 Test C.
+
+A minimal, self-contained bzlmod workspace (separate from the CMake project
+that builds the rest of sympsica): its only purpose is to link
+oracle_check.cc against the vendored, SHA-pinned
+google/distributed_point_functions checkout (../../../../vendor/
+distributed_point_functions — see PINS.md for the pinned SHA and the exact
+host-toolchain pins this required) and run it as `bazel test`.
+
+Build: from this directory,
+  USE_BAZEL_VERSION=7.4.1 bazelisk test --copt=-DHWY_DISABLED_TARGETS=25952256 //:oracle_check
+See task-7-report.md for why both pins are required on this host (macOS/ARM):
+Bazel 7.4.1 (native cc_proto_library was removed in Bazel 9, and the vendored
+dpf/BUILD never gained the explicit @com_google_protobuf//bazel:
+cc_proto_library.bzl load some other consumer would need); and
+HWY_DISABLED_TARGETS=25952256 (= HWY_SVE2_128|HWY_SVE_256|HWY_SVE2|HWY_SVE)
+disables highway's SVE/SVE2 dispatch targets, which Apple Silicon does not
+implement and whose HWY_ALIGN(8) is narrower than absl::uint128's required
+16-byte alignment on this toolchain.
+"""
+
+module(
+    name = "sympsica_zt4_google_dpf_check",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "distributed_point_functions", version = "0.0.0")
+local_path_override(
+    module_name = "distributed_point_functions",
+    path = "../../../../vendor/distributed_point_functions",
+)
+
+bazel_dep(name = "abseil-cpp", version = "20240722.0", repo_name = "com_google_absl")

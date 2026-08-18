@@ -85,6 +85,31 @@ def digest_update(digest: int, x: int) -> int:
     return digest
 
 
+def digit_split(r: int, num_digits: int = 4, digit_bits: int = 16,
+                 top_digit_bits: int = 13, p: int = P) -> list[int]:
+    """Mirrors test/integration/ztgate_pipeline.cpp's digit_split(): a
+    carry-less little-endian digit slice of the low 61 bits of `r`. `p` (=
+    2^61-1) doubles as the 61-bit mask since its binary form is 61 one-bits,
+    exactly like the C++ side's `v &= kRejectedMask`.
+    """
+    v = r & p
+    d = [(v >> (digit_bits * j)) & ((1 << digit_bits) - 1) for j in range(num_digits - 1)]
+    d.append((v >> (digit_bits * (num_digits - 1))) & ((1 << top_digit_bits) - 1))
+    return d
+
+
+def dpf_oracle(domain: int, point: int, payload: int, p: int = P) -> list[int]:
+    """W2.3 plan text, verbatim: the PLAINTEXT point-function oracle —
+    f(x) = payload iff x == point, else 0, for x in [0, domain). Returns the
+    full length-`domain` table so there is exactly one place (this function)
+    the oracle's semantics live; callers needing only f(x) for one x should
+    index the result rather than reimplement the predicate.
+    """
+    assert 0 <= point < domain, f"point {point} out of [0, {domain})"
+    assert 0 <= payload < p, f"payload {payload} not a canonical Fp value"
+    return [payload if x == point else 0 for x in range(domain)]
+
+
 def find_generator(p: int = P, factors: Sequence[int] = FP_MINUS_ONE_FACTORS) -> int:
     """Smallest generator of F_p^*: smallest g >= 2 with g^((p-1)/q) != 1
     (mod p) for every prime q dividing p-1. Independent Python-bigint
@@ -222,6 +247,64 @@ class Ref:
         with open(out_path, "w") as f:
             f.write("\n".join(lines) + "\n")
 
+    @staticmethod
+    def emit_zt4_oracle(seeds: Sequence[int], out_path: str, domain_bits: int = 16,
+                         num_digits: int = 4, main_payload: int = 1) -> None:
+        """Emits ZT-4's oracle fixture (task-7-brief.md, W2.3 Test C /
+        [CROSS-IMPL-SEMANTIC]): for each seed, a 61-bit mask `r` drawn from
+        that seed's splitmix64 stream (rejecting p-1 = 2^61-1 exactly like
+        ztgate_pipeline.cpp's step-1/step-2, so every emitted `r` is a
+        canonical, ACCEPTED mask), its digit_split() (the four points each
+        digit tree's oracle checks against — same carry-less split the
+        pipeline uses for step 4), and the shared public payload (1,
+        matching the Task-5 pipeline's hardcoded step-5 value). Consumers
+        force these exact `r` values into the pipeline via
+        PipelineOpts::forced_mask_halves so the interactively-generated DPF
+        keys' points match these rows bit-for-bit.
+
+        Also pins the two near-wrap payloads {p-1, p-2} the plan's ZT-4 row
+        names explicitly; consumers reuse the SAME points above with these
+        payloads via a direct RegularDpf::keyGen call (the pipeline's
+        payload is fixed at 1, so near-wrap payloads bypass the pipeline).
+        """
+        domain = 1 << domain_bits
+        lines: list[str] = []
+        lines.append(f"# sympsica ZT-4 oracle fixture (generated) - format v{FIXTURE_FORMAT_VERSION}")
+        lines.append(f"# generator: python3 ref/reference.py emit-zt4 "
+                     f"--seeds {','.join(str(s) for s in seeds)} --out {out_path}")
+        lines.append(f"format {FIXTURE_FORMAT_VERSION}")
+        lines.append(f"p {P}")
+        lines.append(f"domain_bits {domain_bits}")
+        lines.append(f"domain {domain}")
+        lines.append(f"num_digits {num_digits}")
+        lines.append(f"main_payload {main_payload}")
+        lines.append(f"seed_count {len(seeds)}")
+
+        for seed in seeds:
+            state = seed
+            r = P  # the one rejected value; loop runs at least once
+            while r == P:
+                state, raw = splitmix64_next(state)
+                r = raw & P
+            digits = digit_split(r, num_digits=num_digits, digit_bits=(domain_bits))
+            assert len(digits) == num_digits
+            # Sanity self-check: dpf_oracle at each digit's point is the
+            # single nonzero entry in that tree's table, valued main_payload
+            # — the exact property the emitted row lets the C++ side assert
+            # against its own full-domain expansion.
+            for pt in digits:
+                table = dpf_oracle(domain, pt, main_payload)
+                assert table[pt] == main_payload
+                assert sum(table) == main_payload
+            lines.append("oracle_row " + " ".join(str(x) for x in ([seed, r] + digits)))
+
+        lines.append("nearwrap_count 2")
+        lines.append(f"nearwrap {P - 1}")  # p-1
+        lines.append(f"nearwrap {P - 2}")  # p-2
+
+        with open(out_path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+
 
 def _cli(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="reference.py")
@@ -231,10 +314,20 @@ def _cli(argv: list[str]) -> int:
     emit.add_argument("--seed", type=int, required=True)
     emit.add_argument("--out", type=str, required=True)
 
+    emit_zt4 = sub.add_parser("emit-zt4", help="emit the ZT-4 oracle fixture (task-7-brief.md, W2.3)")
+    emit_zt4.add_argument("--seeds", type=str, required=True,
+                          help="comma-separated list of seeds, e.g. 0,1,2,...,9")
+    emit_zt4.add_argument("--out", type=str, required=True)
+
     args = parser.parse_args(argv)
     if args.cmd == "emit":
         Ref.emit_fixtures(args.seed, args.out)
         print(f"wrote {args.out} (seed={args.seed})")
+        return 0
+    if args.cmd == "emit-zt4":
+        seeds = [int(s) for s in args.seeds.split(",")]
+        Ref.emit_zt4_oracle(seeds, args.out)
+        print(f"wrote {args.out} (seeds={seeds})")
         return 0
     return 1
 

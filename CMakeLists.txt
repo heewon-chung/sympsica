@@ -89,6 +89,18 @@ endfunction()
 sympsica_check_vendored_sha("libOTe" "${CMAKE_SOURCE_DIR}/vendor/libOTe")
 sympsica_check_vendored_sha("cryptoTools" "${CMAKE_SOURCE_DIR}/vendor/libOTe/cryptoTools")
 
+# task-7 brief, W2.3 part (b): google/distributed_point_functions is vendored
+# for the ZT-4 cross-implementation SEMANTIC check's part (b), but it is its
+# own separate Bazel/bzlmod project (test/gates/oracle_dpf/google_dpf/), not
+# a CMake dependency of this build -- so, unlike libOTe/cryptoTools above,
+# its presence is optional here: only guard its SHA when the checkout
+# exists, so a tree without vendor/distributed_point_functions/ (e.g. a
+# fresh clone that has not run part (b)'s vendoring step) still configures
+# cleanly.
+if(EXISTS "${CMAKE_SOURCE_DIR}/vendor/distributed_point_functions")
+    sympsica_check_vendored_sha("distributed_point_functions" "${CMAKE_SOURCE_DIR}/vendor/distributed_point_functions")
+endif()
+
 # ---------------------------------------------------------------------------
 # Dependencies fetched via FetchContent (exact tags; see PINS.md)
 # ---------------------------------------------------------------------------
@@ -203,7 +215,21 @@ enable_testing()
 include(GoogleTest)
 
 function(sympsica_add_test_target _dir_name _test_prefix)
-    file(GLOB _srcs CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/test/${_dir_name}/*.cpp")
+    # GLOB_RECURSE (task-7 brief, W2.3): test/gates/ owns nested
+    # subdirectories per test group (test/gates/oracle_dpf/), unlike
+    # test/utils/ and test/integration/, which stay flat. A plain GLOB would
+    # silently miss sources one level down; GLOB_RECURSE is a superset that
+    # still matches exactly the same files for the existing flat dirs. The
+    # *.cpp-only pattern also deliberately excludes
+    # test/gates/oracle_dpf/google_dpf/oracle_check.cc (part (b)'s Bazel-only
+    # driver, `.cc` per google/distributed_point_functions' own convention,
+    # never a CMake target -- see that directory's MODULE.bazel).
+    file(GLOB_RECURSE _srcs CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/test/${_dir_name}/*.cpp")
+    # Extra sources shared in from another test directory's implementation
+    # file (task-7 brief: test/gates/oracle_dpf/kat_oracle_libote.cpp reuses
+    # test/integration/ztgate_pipeline.cpp's actual implementation, not just
+    # its header, so it must be compiled into this target too).
+    list(APPEND _srcs ${ARGN})
     if(_srcs STREQUAL "")
         return()
     endif()
@@ -227,3 +253,9 @@ sympsica_add_test_target(utils utils)
 # the original "no sources exist yet" comment describing obligation (a)'s
 # guard is stale and has been removed).
 sympsica_add_test_target(integration integration)
+# test/gates/oracle_dpf/*.cpp -> sympsica_tests_gates, TEST_PREFIX "gates."
+# (task-7-brief.md, W2.3: cross-implementation SEMANTIC check / ZT-4). Reuses
+# ztgate_pipeline.cpp's implementation (Task-5, W2.1) to generate real
+# libOTe DPF keys; that file lives under test/integration/ (owned by Task 5)
+# so it is passed in explicitly as an extra source rather than duplicated.
+sympsica_add_test_target(gates gates "${CMAKE_SOURCE_DIR}/test/integration/ztgate_pipeline.cpp")

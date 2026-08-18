@@ -111,6 +111,110 @@ commit gigabytes of vendored git history. This file (the SHAs above) plus the W0
 configure-time guard are the reproducibility record — re-vendor via the pinned SHAs
 above rather than expecting `vendor/` to be tracked by git.
 
+## google/distributed_point_functions (task-7 brief, W2.3 part (b))
+
+Vendored for the ZT-4 cross-implementation SEMANTIC check's part (b) — a
+Bazel/bzlmod-only project (no `CMakeLists.txt` anywhere in the repo), so it
+is built and run entirely outside the CMake project, from its own small
+bzlmod workspace at `test/gates/oracle_dpf/google_dpf/` (see that
+directory's `MODULE.bazel` for the exact rationale). The CMake configure-time
+SHA guard (`CMakeLists.txt`) checks this checkout's `HEAD` against the pin
+below whenever `vendor/distributed_point_functions/` exists, mirroring the
+libOTe/cryptoTools guard, but does not require the checkout to exist (this
+vendored tree is not a build dependency of the CMake project itself).
+
+```
+git clone https://github.com/google/distributed_point_functions vendor/distributed_point_functions
+git -C vendor/distributed_point_functions checkout <sha below>
+```
+
+| Repo | SHA |
+|---|---|
+| distributed_point_functions (google/distributed_point_functions) | `859cafa71fc1e139c7b76d4d4c0f23438688a8ad` |
+
+Machine-readable pin (parsed verbatim by the same CMake guard function as the
+libOTe/cryptoTools lines above):
+
+- distributed_point_functions: 859cafa71fc1e139c7b76d4d4c0f23438688a8ad
+
+Commit date `2026-01-05` (per `git log -1 --format='%ci'`); no tagged release
+exists upstream (`git tag -l` returns only `v0.0.0`), so the tip of the
+default branch was pinned.
+
+### Build path taken: 2 (bazelisk), with two host-toolchain pins
+
+Per task-7-brief.md's fallback ladder: (1) the library's own CMake build was
+tried first and is definitionally unavailable — there is no `CMakeLists.txt`
+anywhere in the checkout (`find . -iname CMakeLists.txt` returns nothing;
+confirmed by attempting `cmake -S vendor/distributed_point_functions -B ...`,
+which fails immediately with "no CMakeLists.txt found"). (2) `brew install
+bazelisk` (host pin: **bazelisk 1.29.0**, `bazel --version` reports **9.2.0**
+as bazelisk's *default* resolved release) was used next, and — after two
+host-toolchain pins below — succeeded: both `//dpf:distributed_point_function`
+(the full DPF keygen/eval library) and this task's own driver
+(`test/gates/oracle_dpf/google_dpf:oracle_check`) build and run cleanly.
+Rung 3 (STOP, write an unrun driver) was **not** needed.
+
+1. **Bazel release pinned to 7.4.1 via `USE_BAZEL_VERSION=7.4.1`** (a
+   bazelisk-native environment variable — no file inside the vendored
+   checkout is touched). Root cause, verified by direct inspection: bazelisk's
+   default Bazel release (9.2.0) has fully removed the native `cc_proto_library`
+   global rule (`dpf/BUILD:138` calls `cc_proto_library(...)` without any
+   `load(..., "cc_proto_library")` — every other rule in that file IS
+   explicitly loaded, e.g. `load("@rules_cc//cc:cc_library.bzl",
+   "cc_library")`, so this is a genuine gap in the vendored file, not a
+   version-resolution artifact: deleting and letting bzlmod regenerate
+   `MODULE.bazel.lock` from scratch reproduces the identical error). Bazel
+   7.4.1 still resolves `cc_proto_library` as a native global, so the same
+   `dpf/BUILD` builds unmodified. This is a build-tool version choice, not a
+   change to the vendored checkout — `vendor/distributed_point_functions/`
+   itself was never edited (verified: `git status` in that checkout shows
+   only `MODULE.bazel.lock` touched, from bazel's own dependency-resolution
+   cache regeneration, and that file was restored to its pristine
+   post-clone state afterward; see below).
+2. **`--copt=-DHWY_DISABLED_TARGETS=25952256`** — the full DPF library
+   (`dpf/internal/evaluate_prg_hwy.cc`, `dpf/internal/aes_128_fixed_key_hash_hwy.h`)
+   depends on `@highway//:hwy` (google/highway 1.2.0, pinned by
+   `distributed_point_functions`'s own `MODULE.bazel`) for its SIMD dispatch.
+   Without this flag, compiling for ARM's SVE/SVE2 dispatch targets fails
+   with `error: requested alignment is less than minimum alignment of 16 for
+   type 'absl::uint128'` (`HWY_ALIGN` resolves to `alignas(8)` for those
+   targets in this highway version, narrower than `absl::uint128` needs) —
+   this is exactly the ARM incompatibility task-7-brief.md's parenthetical
+   ("ARM needs HWY_DISABLED_TARGETS") named. Apple Silicon implements NEON,
+   not SVE/SVE2 (an ARM server-class extension), so disabling them is also
+   the semantically correct choice, not just a workaround: `25952256` =
+   `HWY_SVE2_128 (1<<18) | HWY_SVE_256 (1<<19) | HWY_SVE2 (1<<23) | HWY_SVE
+   (1<<24)` (bit values from `external/highway~/hwy/detect_targets.h` in the
+   fetched highway checkout). With this flag, `dpf->` reports "Highway is in
+   NEON mode" at runtime (confirmed in the driver's own log output) and both
+   targets build and pass.
+
+Full reproduction, from `vendor/distributed_point_functions/`:
+
+```
+brew install bazelisk   # host pin: bazelisk 1.29.0
+USE_BAZEL_VERSION=7.4.1 bazelisk build --copt=-DHWY_DISABLED_TARGETS=25952256 \
+    //dpf:distributed_point_function
+```
+
+or, for this task's actual check (from
+`test/gates/oracle_dpf/google_dpf/`):
+
+```
+USE_BAZEL_VERSION=7.4.1 bazelisk test --copt=-DHWY_DISABLED_TARGETS=25952256 \
+    //:oracle_check
+```
+
+`MODULE.bazel.lock` note: a stray first `bazelisk build` attempt (made
+before either pin above was known) regenerated this checked-out file as a
+side effect of dependency resolution even though the subsequent build
+failed; it was restored to the exact bytes present immediately after
+`git clone` before this task finished (this is bazel's normal
+dependency-resolution cache, analogous to `python3 build.py --setup`
+regenerating libOTe's own `config.h` files in-tree — not a change to the
+pinned commit's source).
+
 ## CMake compatibility notes
 
 - Host used for verification: macOS ARM (Darwin 25.5). cmake was upgraded from the

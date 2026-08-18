@@ -1,0 +1,4 @@
+# Bazel's own output symlinks -- ephemeral, point outside the repo (into the
+# bazel cache under /private/var/tmp or similar), never reproducible on
+# another host or checkout.
+bazel-*
