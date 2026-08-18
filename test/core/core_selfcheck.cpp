@@ -245,3 +245,92 @@ TEST(CoreSelfCheck, Update_NormalInsertAndDeleteApply) {
     EXPECT_TRUE(st.J.count(G.of(2)));
     EXPECT_TRUE(st.check_against(st.my_ids, enc, G));
 }
+
+// --- fix round 1 (R-DUP ruling): within-list duplicates ---------------------
+// dedup -> pair drop -> membership filter (in that order); a duplicate is a
+// redundant edit, so it must behave as a FULL no-op the second time: no
+// double-apply on a duplicate insert, no abort on a duplicate delete.
+
+TEST(CoreSelfCheck, Update_DuplicateInsertAppliesOnce) {
+    Params params = Params::instantiate();
+    const Encoder& enc = params.encoder;
+    const BucketOracle& G = params.oracle;
+
+    // Reference: a single-edit table for id 5, to compare the deduped
+    // result's row against (must NOT be double-applied).
+    PowerSumTable single_edit_reference;
+    single_edit_reference.edit(5, +1, enc, G);
+
+    PartyState st;
+    std::vector<u64> I = {5, 5}; // duplicate insert, id absent
+    std::vector<u64> D = {};
+    Update::apply(st, I, D, enc, G);
+
+    EXPECT_EQ(st.my_ids, std::vector<u64>{5}); // single entry, not two
+    EXPECT_EQ(st.my_size, 1u);
+    EXPECT_EQ(st.table.row(G.of(5)), single_edit_reference.row(G.of(5)));
+}
+
+TEST(CoreSelfCheck, Update_DuplicateDeleteAppliesOnceNoAbort) {
+    Params params = Params::instantiate();
+    const Encoder& enc = params.encoder;
+    const BucketOracle& G = params.oracle;
+
+    PartyState st;
+    st.my_ids = {9};
+    st.table.init(st.my_ids, enc, G);
+    st.my_size = 1;
+
+    std::vector<u64> I = {};
+    std::vector<u64> D = {9, 9}; // duplicate delete, id present -- must NOT abort
+    Update::apply(st, I, D, enc, G);
+
+    EXPECT_TRUE(st.my_ids.empty());
+    EXPECT_EQ(st.my_size, 0u);
+    EXPECT_TRUE(st.J.count(G.of(9)));
+    for (auto f : st.table.row(G.of(9))) EXPECT_EQ(f, Fp(0));
+}
+
+TEST(CoreSelfCheck, Update_DuplicateOfFilteredIdIsFullNoOp) {
+    Params params = Params::instantiate();
+    const Encoder& enc = params.encoder;
+    const BucketOracle& G = params.oracle;
+
+    // Duplicate insert of an ALREADY-PRESENT id: filtered by membership,
+    // dedup must not change that outcome.
+    {
+        PartyState st;
+        st.my_ids = {7};
+        st.table.init(st.my_ids, enc, G);
+        st.my_size = 1;
+        auto table_before = st.table.rows();
+        auto j_before = st.J;
+
+        std::vector<u64> I = {7, 7};
+        std::vector<u64> D = {};
+        Update::apply(st, I, D, enc, G);
+
+        EXPECT_EQ(st.my_ids, std::vector<u64>{7});
+        EXPECT_EQ(st.my_size, 1u);
+        EXPECT_EQ(st.J, j_before);
+        EXPECT_EQ(st.table.rows(), table_before);
+    }
+
+    // Duplicate delete of an ABSENT id: filtered by membership, dedup must
+    // not change that outcome (and must not abort).
+    {
+        PartyState st;
+        st.my_ids = {};
+        st.my_size = 0;
+        auto j_before = st.J;
+
+        std::vector<u64> I = {};
+        std::vector<u64> D = {13, 13};
+        Update::apply(st, I, D, enc, G);
+
+        EXPECT_TRUE(st.my_ids.empty());
+        EXPECT_EQ(st.my_size, 0u);
+        EXPECT_EQ(st.J, j_before);
+        EXPECT_TRUE(st.table.rows().empty());
+    }
+}

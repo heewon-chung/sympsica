@@ -8,21 +8,65 @@
 
 namespace sympsica {
 
+namespace {
+
+// dedup(v) — first-occurrence-wins deduplication (fix round 1, R-DUP ruling:
+// a within-list duplicate is a redundant edit, governed by the same
+// FT1/step-1-filter philosophy as every other filtered edit).
+std::vector<u64> dedup(std::span<const u64> v) {
+    std::vector<u64> out;
+    out.reserve(v.size());
+    std::unordered_set<u64> seen;
+    for (u64 x : v) {
+        if (seen.insert(x).second) out.push_back(x);
+    }
+    return out;
+}
+
+} // namespace
+
 void Update::apply(PartyState& st, std::span<const u64> I, std::span<const u64> D,
                     const Encoder& enc, const BucketOracle& G) {
-    std::unordered_set<u64> i_raw(I.begin(), I.end());
-    std::unordered_set<u64> d_raw(D.begin(), D.end());
+    // =========================================================================
+    // STEP 1 FILTER -- three stages, in this order (fix round 1, controller
+    // ruling, binding):
+    //   (1) DEDUP:      collapse within-list duplicates of I and of D to a
+    //                    single first occurrence. A duplicate is a redundant
+    //                    edit: it must be a FULL no-op the second time (no
+    //                    double-apply on a duplicate insert, no abort on a
+    //                    duplicate delete), exactly like every other filtered
+    //                    edit below.
+    //   (2) PAIR DROP:   an id present in BOTH the (deduped) I and D lists is
+    //                    dropped from BOTH -- checked against the raw
+    //                    (deduped) lists, not against the post-membership-
+    //                    filtered I'/D' (which are disjoint by construction,
+    //                    so that check would be vacuous).
+    //   (3) MEMBERSHIP:  I' keeps only ids not currently in st.my_ids; D'
+    //                    keeps only ids currently in st.my_ids.
+    // This whole block is intentionally ONE contiguous, clearly-delimited
+    // region: Task 11's SYMPSICA_NO_FILTER build-time flag disables ALL
+    // THREE stages together (not just the membership filter) by #ifdef'ing
+    // this region out -- UPD-5's negative leg (a duplicate insert corrupting
+    // state) depends on dedup being inside the disabled region, not outside
+    // it.
+    // =========================================================================
+    std::vector<u64> i_dedup = dedup(I);
+    std::vector<u64> d_dedup = dedup(D);
+
+    std::unordered_set<u64> i_set(i_dedup.begin(), i_dedup.end());
+    std::unordered_set<u64> d_set(d_dedup.begin(), d_dedup.end());
     std::unordered_set<u64> my_set(st.my_ids.begin(), st.my_ids.end());
 
     std::vector<u64> i_prime, d_prime;
-    i_prime.reserve(I.size());
-    d_prime.reserve(D.size());
-    for (u64 x : I) {
-        if (!my_set.count(x) && !d_raw.count(x)) i_prime.push_back(x);
+    i_prime.reserve(i_dedup.size());
+    d_prime.reserve(d_dedup.size());
+    for (u64 x : i_dedup) {
+        if (!my_set.count(x) && !d_set.count(x)) i_prime.push_back(x);
     }
-    for (u64 x : D) {
-        if (my_set.count(x) && !i_raw.count(x)) d_prime.push_back(x);
+    for (u64 x : d_dedup) {
+        if (my_set.count(x) && !i_set.count(x)) d_prime.push_back(x);
     }
+    // ======================================================= END STEP 1 FILTER
 
     for (u64 x : i_prime) {
         st.my_ids.push_back(x);
