@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -23,6 +24,20 @@ namespace sympsica {
 
 namespace zt = ztgate;
 namespace zvole = vole;
+
+// sympsica::Role (core/share.hpp) and ztgate::Role (protocols/detail/
+// ztgate_pipeline.hpp) are two INDEPENDENTLY declared enums -- generate_gates
+// and generate_triples below `static_cast<zt::Role>(role)` a `sympsica::Role`
+// straight across, which is only sound because both enumerate {Receiver,
+// Sender} in the same order with the same underlying values. Pinned here so
+// a future reordering of either enum fails to compile instead of silently
+// swapping which party plays which role at Setup's pipeline call sites.
+static_assert(static_cast<std::underlying_type_t<Role>>(Role::Receiver) ==
+                      static_cast<zt::oc::u64>(zt::Role::Receiver) &&
+                  static_cast<std::underlying_type_t<Role>>(Role::Sender) ==
+                      static_cast<zt::oc::u64>(zt::Role::Sender),
+              "sympsica::Role and ztgate::Role must agree on their enumerator values -- "
+              "generate_triples/generate_gates static_cast<zt::Role>(role) relies on this");
 
 namespace {
 
