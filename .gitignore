@@ -1,4 +1,10 @@
 build/
+vendor/
+
+# Local working documents (specs, plans, evidence, agent state) — never published
+.handoff/
 .superpowers/
 .omc/
-vendor/
+.agent/
+.claude/
+.codex/
