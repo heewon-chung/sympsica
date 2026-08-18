@@ -17,6 +17,17 @@ HWY_DISABLED_TARGETS=25952256 (= HWY_SVE2_128|HWY_SVE_256|HWY_SVE2|HWY_SVE)
 disables highway's SVE/SVE2 dispatch targets, which Apple Silicon does not
 implement and whose HWY_ALIGN(8) is narrower than absl::uint128's required
 16-byte alignment on this toolchain.
+
+CAUTION (task-7-report.md, "Correction" section, fix round 1): running
+`bazelisk build`/`test` directly against ../../../../vendor/
+distributed_point_functions/ itself (not just this workspace) rewrites
+THAT checkout's own MODULE.bazel.lock to match whatever subset of the
+module graph the invoked target(s) resolved -- on every Bazel version and
+every host, not only this one. If you need that checkout's `git status` to
+read clean afterward, restore it with `git checkout -- MODULE.bazel.lock`
+(never a manual backup/restore -- a backup taken after ANY prior bazel
+invocation is already contaminated) before treating its status as evidence
+of anything.
 """
 
 module(
