@@ -1,10 +1,12 @@
 // test/gates/kat_symdiff.cpp — Task 14 (task-14-brief.md, W4.4/W4.5): the
 // formal SD-1..SD-4/TV-F13 KAT suite for gates/symdiff.hpp
-// (SymDiffEvaluator), plus the M0 instrumentation pin (W4.5) and the
-// batched-schedule cross-check that backs the design-doc-delta disclosed
-// in src/gates/symdiff.cpp (the m-index schedule is re-hosted there,
-// batched across buckets, rather than reusing MinorCircuit::eval's
-// per-call API).
+// (SymDiffEvaluator), plus the M0 instrumentation pin (W4.5) and a
+// batched-schedule regression guard (BatchedMinorsMatchMinorCircuit
+// PerBucketRandomTrials). Controller ruling (task-14-report.md addendum):
+// gates/symdiff.cpp delegates rounds 1-2 to gates/minors.hpp's
+// MinorCircuit::eval_batch -- the schedule's ONE implementation, per the
+// design doc's binding single-source-of-truth requirement -- rather than
+// re-hosting the m-index schedule itself.
 //
 // Test IDs carried in the test names:
 //   SD-1 [SEED-FIXED] — synthetic buckets t in {0..4} + a padding row (all-
@@ -544,10 +546,22 @@ TEST(GatesSymdiff, TVF13_SequentialPerBucketEvaluationDoesNotGiveEightRoundsTota
 }
 
 // ---------------------------------------------------------------------------
-// Design-doc-delta mitigation: the m-index schedule re-hosted (batched)
-// inside src/gates/symdiff.cpp is cross-checked against MinorCircuit::
-// eval's per-bucket, independently-tested schedule (kat_minors.cpp) on
-// random trials, via the reconstructed t each path produces.
+// Regression guard: SymDiffEvaluator::eval_buckets's minors rounds (which
+// call MinorCircuit::eval_batch) are cross-checked against MinorCircuit::
+// eval's single-bucket path (kat_minors.cpp's MIN-1..5 suite) on random
+// trials, via the reconstructed t each path produces. NOTE (controller
+// ruling, task-14-report.md addendum): now that gates/symdiff.cpp
+// delegates to MinorCircuit::eval_batch instead of re-hosting the
+// schedule, eval() ITSELF is a thin wrapper calling eval_batch with a
+// batch of one (minors.cpp) -- so this test is "trivially true by
+// construction" in the sense that both paths ultimately run the exact
+// same eval_batch code. Kept anyway (per the controller's "keep or
+// simplify, your call") as a black-box regression guard on the PUBLIC
+// eval()/eval_buckets() contract: it would still catch a future change
+// that broke that equivalence (e.g. eval() stopping being a thin wrapper,
+// or eval_buckets() diverging from eval_batch's per-bucket semantics)
+// without relying on any white-box knowledge of the current
+// implementation.
 // ---------------------------------------------------------------------------
 
 TEST(GatesSymdiff, BatchedMinorsMatchMinorCircuitPerBucketRandomTrials) {

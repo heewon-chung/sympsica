@@ -22,8 +22,16 @@ namespace sympsica {
 //
 // Round map (plan W4.4, verbatim numbering; see eval_buckets's body for
 // the corresponding code section):
-//   1: minors layer 1 (20 products/bucket), batched across every bucket.
-//   2: minors layer 2 (9 products/bucket), batched across every bucket.
+//   1: minors layer 1 (20 products/bucket), batched across every bucket
+//      -- delegates to gates/minors.hpp's MinorCircuit::eval_batch, the
+//      schedule's ONE implementation (controller ruling,
+//      task-14-report.md addendum: the design doc's single-source-of-
+//      truth requirement for the m-index schedule is binding, so this
+//      file does NOT re-host the schedule -- it calls eval_batch, which
+//      runs rounds 1 and 2 internally, batched across the WHOLE span of
+//      buckets in one call each).
+//   2: minors layer 2 (9 products/bucket), batched across every bucket
+//      -- see round 1 (both rounds happen inside ONE eval_batch call).
 //   3: gate opening (ZeroTest::open_masked), batched across every
 //      bucket's 4 gates (tau = 1..4, one gate per minor D_tau).
 //   4: ZT recombination layer B, batched across every bucket's 4 gates.
@@ -31,13 +39,12 @@ namespace sympsica {
 //   6: s_3 = b_3 * s_4, batched across every bucket.
 //   7: s_2 = b_2 * s_3, batched across every bucket.
 //   8: s_1 = b_1 * s_2, batched across every bucket.
-// Local (no round): every per-bucket linear combo (minors' T/B/A3/B3/C3
-// terms, D3/D4 from layer 2's outputs) and the final affine step
-// t_beta_share = 4*nu - (s_1+s_2+s_3+s_4), nu = 1 for Receiver's own
-// local share only (0 for Sender) -- summing both parties' shares gives
-// 4 - sum(s_tau), which recovers t exactly (task-14-report.md has the
-// derivation: s_tau reconstructs to [D_tau == D_(tau+1) == ... == D_4 ==
-// 0], so sum(s_tau) over tau=1..4 equals 4 - t).
+// Local (no round): the final affine step t_beta_share = 4*nu -
+// (s_1+s_2+s_3+s_4), nu = 1 for Receiver's own local share only (0 for
+// Sender) -- summing both parties' shares gives 4 - sum(s_tau), which
+// recovers t exactly (task-14-report.md has the derivation: s_tau
+// reconstructs to [D_tau == D_(tau+1) == ... == D_4 == 0], so sum(s_tau)
+// over tau=1..4 equals 4 - t).
 //
 // Per-bucket cost (task-14-brief.md W4.5): 44 triples (29 minors + 12 ZT
 // recombination + 3 suffix), 4 fresh ZtGates, 184 field elements /
