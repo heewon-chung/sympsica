@@ -51,6 +51,43 @@ computes this same sequence via `Ref.simulate_days(schedule_r, schedule_s)`
 real party processes' JSONL `"count"` fields equal it exactly, in order,
 at every query day.
 
+## `e2e_seed{0,1,2,3}_{r,s}.json` (task-19-brief.md SC2/E2E-1..4, W5.8)
+
+Golden source: `ref/reference.py`'s `Ref.make_e2e_schedule_pair(seed)` +
+`Ref.emit_e2e_schedule_pair()`. Regenerate with:
+
+```
+python3 ref/reference.py emit-e2e --seed <N> --out-r test/e2e/fixtures/e2e_seed<N>_r.json --out-s test/e2e/fixtures/e2e_seed<N>_s.json
+```
+
+for `N` in `0..3` (R-SCALE19: "seeds 0..9 is a superset -- run 4"). Unlike
+`schedule_r.json`/`schedule_s.json` above (hand-authored), these ARE
+generator-emitted -- but still real JSON (party_main.cpp's native
+`--schedule` format), not this directory's own line-based fixture
+convention, since these files are consumed directly by the `party` binary,
+not by a C++ test reading via `fixture_support.hpp`.
+
+Each pair: n ~ 2^10 ids/party (`seed*10000` offsets keep the four pairs'
+id universes disjoint), exactly 4 days --
+`d0` (bulk insert, no query) / `d1` (first query, plain `FullPublic`) /
+`d2` (`"maintenance":true` on both files -- salt-refresh query day,
+R-SCALE19's ">= 1 salt-refresh day") / `d3` (delete-bearing query day,
+R-SCALE19's ">= 1 delete-bearing normal day") -- 3 query days total,
+deliberately kept SHORT (R-SCALE19: "Expect minutes per schedule; keep
+each schedule SHORT"). `test/e2e/run_e2e_gate.py` computes the expected
+per-query-day counts LIVE via `Ref.simulate_days()` (not against a
+committed golden transcript -- committed E2E goldens are Phase-6's
+deliverable, per task-19-brief.md requirement 2).
+
+These same 4 fixture pairs are also reused (unmodified) by the FC1/FC2/FC5
+wrong-construction legs (`--expect-mismatch` mode, run against a
+`SYMPSICA_WRONG_SIGN`/`SYMPSICA_WRONG_CONVERT`/`SYMPSICA_STALE_SIZES` build
+of `party` -- see CMakeLists.txt's `SYMPSICA_NO_FILTER` precedent and
+task-19-report.md for the exact commands run and observed output); no
+separate FC-specific fixtures exist. FC1 additionally verifies (via
+`--require-asymmetric`) that the reused pair really is an asymmetric set
+(`|A\B| != |B\A|`), since TV-F8 specifically requires that shape.
+
 ## Why 01-05 deletes on a non-maintenance day (R-OCCUPIED)
 
 **Found and FIXED defect (controller ruling R-OCCUPIED, task-18-brief.md):**

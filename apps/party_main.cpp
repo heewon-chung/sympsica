@@ -458,6 +458,18 @@ int main(int argc, char** argv) {
 
     Pools pools = Setup::run(role, *ch, params, PoolSizes{0, 0});
 
+    // task-19-brief.md carried item (b): std::ios::trunc (unchanged, a
+    // deliberate choice, not an oversight). A crash-matrix or E2E replay
+    // that re-invokes THIS binary against the SAME --out path would lose
+    // earlier records; instead of switching to append (which would risk
+    // silently mixing an old run's stale JSONL lines into a fresh one if a
+    // caller ever forgot to clean up), every driver in this task
+    // (test/e2e/run_e2e_gate.py, test/e2e/run_smoke.py) always launches
+    // party_main against a FRESH, distinct --out path per invocation --
+    // never re-invoking it against a pre-existing one. The crash matrix
+    // itself (test/e2e/run_crash_matrix.py) does not even go through
+    // party_main/--out at all (apps/crash_probe.cpp, a separate minimal
+    // binary, has no --out flag).
     std::ofstream out(cfg.out_path, std::ios::out | std::ios::trunc);
     SYMPSICA_REQUIRE(out.is_open(), "party_main: failed to open --out JSONL file for writing");
 
@@ -525,5 +537,13 @@ int main(int argc, char** argv) {
     }
 
     out.close();
+
+    // CLM-B cross-check (task-19-brief.md SC6/R-CLMB): PkOpCounter's final
+    // value, echoed to stderr -- test/e2e/run_e2e_gate.py greps this so a
+    // real E2E-scale schedule run gives a bonus, non-primary confirmation
+    // alongside test/protocols_heavy/kat_clmb.cpp's own dedicated (small-
+    // scale) test that PkOpCounter stays constant after Setup::run.
+    std::cerr << "pkop_counter=" << PkOpCounter::value() << "\n";
+
     return 0;
 }

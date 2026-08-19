@@ -138,7 +138,19 @@ std::array<Share, Params::K> build_syndrome(const PartyState& st, u32 beta, Role
     std::array<Fp, Params::K> row = st.table.row(beta); // zero row if unoccupied
     std::array<Share, Params::K> out{};
     for (u64 k = 0; k < Params::K; ++k) {
+#ifdef SYMPSICA_WRONG_SIGN
+        // FC1 [TV-F8] (task-19-brief.md R-FCFLAGS): TEST-ONLY wrong
+        // construction -- the Sender's sign convention is flipped from
+        // -row to +row (losing R-SYND's receiver-+/sender-- asymmetry
+        // entirely), matching TV-F8's literal "flip one party's sign
+        // convention" text. NEVER defined in the default build (CMake
+        // option SYMPSICA_WRONG_SIGN defaults OFF, same precedent as
+        // SYMPSICA_NO_FILTER); exists only so a separately-configured
+        // build dir can demonstrate FC1's asymmetric-set count corruption.
+        out[k] = Share{row[k]};
+#else
         out[k] = Share{role == Role::Sender ? row[k].neg() : row[k]};
+#endif
     }
     return out;
 }
@@ -222,7 +234,19 @@ constexpr Fp INV2 = Fp(1ull << 60);
 // matching W5.3 step 5 literally.
 Share convert(Role role, const Share& t_share, u64 nA, u64 nB) {
     Fp a = INV2.neg();
+#ifdef SYMPSICA_WRONG_CONVERT
+    // FC2 [TV-F9 at E2E scale] (task-19-brief.md R-FCFLAGS): TEST-ONLY
+    // wrong construction -- the Receiver-form additive constant is applied
+    // UNCONDITIONALLY, regardless of `role` (i.e. the Sender ALSO adds the
+    // public nA+nB term it must never add). NEVER defined in the default
+    // build (CMake option SYMPSICA_WRONG_CONVERT defaults OFF); exists
+    // only so a separately-configured build dir can demonstrate FC2's
+    // count corruption at schedule/E2E scale (Task 17's kat_query.cpp FC1
+    // already covers the unit-level leg of the same defect).
+    Fp b = INV2.mul(Fp::from_u64(nA).add(Fp::from_u64(nB)));
+#else
     Fp b = role == Role::Receiver ? INV2.mul(Fp::from_u64(nA).add(Fp::from_u64(nB))) : Fp(0);
+#endif
     return affine(a, t_share, b);
 }
 
@@ -277,10 +301,13 @@ Share run_full(Role role, PartyState& st, Pools& pools, Channel& ch, const std::
     // "padding row" convention); this filter simply extends that same
     // equivalence to a row that is PRESENT but happens to be all-zero.
     //
-    // This filter is EXACT, not a heuristic, for any t in [0, Params::K]
-    // ids netted into one bucket (t is bounded by K=7 here since a row
-    // only ever stores K=7 power sums; the protocol's own true-occupancy
-    // cap T=4 keeps every REAL bucket well inside that range regardless):
+    // This filter is EXACT, not a heuristic, for any t in [0, 7] ids netted
+    // into one bucket: the Newton's-identities argument below holds for
+    // t <= 7 because a row only ever stores K=7 power sums (p_1..p_7), so
+    // the recursion cannot reach past e_7. What actually BOUNDS a real
+    // bucket's occupancy is the protocol's own T=4 no-overflow assumption
+    // (Params::T) -- K=7 is the storage DEPTH the table happens to keep,
+    // not itself an occupancy cap; T=4 is what real buckets stay under.
     // by Newton's identities, power sums p_1..p_t determine the elementary
     // symmetric polynomials e_1..e_t of the bucket's sigma-values via the
     // standard recursion (e_1 = p_1; k*e_k = sum_{i=1}^{k} (-1)^(i-1) e_{k-i} p_i);
@@ -365,7 +392,23 @@ Share Query::run(Role role, PartyState& st, Pools& pools, Channel& ch, const Par
     out0[8] = my_announce ? 1 : 0;
     u8 in0[9];
     ch.exchange(std::span<const u8>(out0, 9), std::span<u8>(in0, 9));
+#ifdef SYMPSICA_STALE_SIZES
+    // FC5 [stale sizes] (task-19-brief.md R-FCFLAGS): TEST-ONLY wrong
+    // construction standing in for "skip round 0's size exchange" (Task
+    // 17's R-ROUND0 folded the plan's literal "step-2 size exchange" into
+    // round 0 -- same quantity, see task-19-report.md for the mapping).
+    // The wire round STILL happens (round-0 byte counts/round structure
+    // stay unchanged, so the two processes never desync) but the freshly
+    // EXCHANGED size is discarded -- `counterpart_size` is pinned to 0,
+    // simulating a party that never actually incorporates the counterpart's
+    // real, current size. NEVER defined in the default build (CMake option
+    // SYMPSICA_STALE_SIZES defaults OFF); exists only so a separately-
+    // configured build dir can demonstrate FC5's E2E-3 count corruption
+    // (the Receiver's convert() constant silently drops the +nB term).
+    const u64 counterpart_size = 0;
+#else
     const u64 counterpart_size = read_u64_le(in0);
+#endif
     const bool counterpart_announce = in0[8] != 0;
 
     // R-FORCEFULL: force_full skips SwitchRule::decide() entirely and takes

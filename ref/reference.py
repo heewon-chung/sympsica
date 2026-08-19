@@ -1150,6 +1150,174 @@ class Ref:
 
         return {"overflowing_buckets": overflowing, "detail": detail}
 
+    # -------------------------------------------------------------------
+    # Cut 4 (task-19-brief.md W5.8, ADDITIVE -- cut-1/2/3 sections above are
+    # byte-identical to before this cut; verify with `git diff` against the
+    # pre-cut-4 blob). SC1's 100-seed schedule sweep (SMALL scale, R-SCALE19)
+    # and E2E-1..4's seed-fixed n~2^10 schedule pairs.
+    # -------------------------------------------------------------------
+
+    @staticmethod
+    def make_paired_day_schedule(seed: int, n_days: int, universe: int,
+                                  insert_per_day: int, delete_prob: float = 0.3
+                                  ) -> tuple[list[dict], list[dict]]:
+        """Builds a small, randomized W5.7-format day-schedule PAIR (SC1,
+        R-SCALE19 SMALL scale: n in [32,128] ids/party, 4-8 days, >=2 query
+        days). Query days are every other day starting at index 1 (>= 2 by
+        construction whenever n_days >= 3; n_days in [4,8] per caller always
+        satisfies this). Each party draws `insert_per_day` fresh ids per day
+        uniformly from [1, universe] (independent per-party splitmix64
+        streams, so R and S do NOT draw identical sequences) and, with
+        probability `delete_prob`, deletes one id currently (approximately)
+        held -- `held_r`/`held_s` are a LOCAL bookkeeping approximation only
+        (not required to be exact: Ref.simulate_days/Update::apply's own
+        update_filter is the actual golden authority for what a delete
+        candidate resolves to; an approximate/invalid delete candidate is
+        simply filtered to a no-op by update_filter on both sides, never a
+        correctness hazard).
+        """
+        state = seed ^ 0x53434831303044  # 'SCH100D'-ish salt, distinct from every other stream
+        held_r: set[int] = set()
+        held_s: set[int] = set()
+        query_days = set(range(1, n_days, 2))
+        if len(query_days) < 2:
+            query_days = set(range(max(0, n_days - 2), n_days))
+
+        def draw(st: int) -> tuple[int, int]:
+            return splitmix64_next(st)
+
+        schedule_r: list[dict] = []
+        schedule_s: list[dict] = []
+        for day_idx in range(n_days):
+            day_label = f"d{day_idx:03d}"
+            is_query = day_idx in query_days
+
+            ins_r: list[int] = []
+            for _ in range(insert_per_day):
+                state, r = draw(state)
+                ins_r.append(1 + (r % universe))
+            del_r: list[int] = []
+            state, r = draw(state)
+            if held_r and (r % 1000) < int(delete_prob * 1000):
+                state, r2 = draw(state)
+                del_r = [sorted(held_r)[r2 % len(held_r)]]
+            held_r |= set(ins_r)
+            held_r -= set(del_r)
+            schedule_r.append({"day": day_label, "insert": ins_r, "delete": del_r,
+                                "query": is_query, "maintenance": False})
+
+            ins_s: list[int] = []
+            for _ in range(insert_per_day):
+                state, r = draw(state)
+                ins_s.append(1 + (r % universe))
+            del_s: list[int] = []
+            state, r = draw(state)
+            if held_s and (r % 1000) < int(delete_prob * 1000):
+                state, r2 = draw(state)
+                del_s = [sorted(held_s)[r2 % len(held_s)]]
+            held_s |= set(ins_s)
+            held_s -= set(del_s)
+            schedule_s.append({"day": day_label, "insert": ins_s, "delete": del_s,
+                                "query": is_query, "maintenance": False})
+
+        return schedule_r, schedule_s
+
+    @staticmethod
+    def emit_sched100_fixture(seed_lo: int, seed_hi: int, out_path: str) -> None:
+        """Emits SC1's bulk 100-seed schedule-pair fixture (task-19-brief.md):
+        for each seed in [seed_lo, seed_hi], a schedule pair from
+        make_paired_day_schedule() (params varied per seed for diversity)
+        plus its golden Ref.simulate_days() expected per-query-day count
+        sequence. Ids are stored CONCRETE (same convention as every other
+        fixture in this module -- tbl1/upd1/schedule -- so the C++ side never
+        needs to replicate this file's PRNG stream).
+        """
+        body: list[str] = []
+        sched_count = 0
+        for seed in range(seed_lo, seed_hi + 1):
+            n_days = 4 + (seed % 5)          # 4..8 (R-SCALE19)
+            universe = 120 + (seed % 60)     # 120..179
+            insert_per_day = 6 + (seed % 5)  # 6..10
+            schedule_r, schedule_s = Ref.make_paired_day_schedule(seed, n_days, universe, insert_per_day)
+            expected = Ref.simulate_days(schedule_r, schedule_s)
+            assert len(expected) >= 2, f"seed={seed}: need >=2 query days, got {len(expected)}"
+            body.append(f"sched {seed} {n_days} {len(expected)}")
+            for day_r, day_s in zip(schedule_r, schedule_s):
+                row = [str(seed), day_r["day"], "1" if day_r["query"] else "0",
+                       str(len(day_r["insert"]))] + [str(x) for x in day_r["insert"]]
+                row += [str(len(day_r["delete"]))] + [str(x) for x in day_r["delete"]]
+                row += [str(len(day_s["insert"]))] + [str(x) for x in day_s["insert"]]
+                row += [str(len(day_s["delete"]))] + [str(x) for x in day_s["delete"]]
+                body.append("day " + " ".join(row))
+            body.append("expected " + str(seed) + " " + " ".join(str(x) for x in expected))
+            sched_count += 1
+
+        lines: list[str] = []
+        lines.append(f"# sympsica SCHED100 fixture (generated) - format v{FIXTURE_FORMAT_VERSION}")
+        lines.append("# generator: python3 ref/reference.py emit-sched100 "
+                      f"--seed-lo {seed_lo} --seed-hi {seed_hi} --out {out_path}")
+        lines.append(f"format {FIXTURE_FORMAT_VERSION}")
+        lines.append(f"seed_lo {seed_lo}")
+        lines.append(f"seed_hi {seed_hi}")
+        lines.append(f"sched_count {sched_count}")
+        lines.extend(body)
+        with open(out_path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+
+    @staticmethod
+    def make_e2e_schedule_pair(seed: int) -> tuple[list[dict], list[dict]]:
+        """Seed-fixed E2E-1..4 day-schedule pair (task-19-brief.md SC2,
+        R-SCALE19): n ~ 2^10 ids/party, exactly 3 query days -- d1 (first
+        query, plain FullPublic), d2 (maintenance=true, salt-refresh query,
+        >= 1 salt-refresh day), d3 (delete-bearing normal query day, >= 1
+        delete-bearing normal day) -- kept intentionally SHORT (R-SCALE19:
+        "Expect minutes per schedule; keep each schedule SHORT"), since each
+        full-path query at this scale costs tens of seconds of real MPC.
+        `seed` only shifts the id-range offset (distinct, non-overlapping
+        universes across seeds 0..3) so the four fixed schedules are
+        structurally identical but operate on disjoint id spaces.
+        """
+        off = seed * 10_000
+        r_base = list(range(1 + off, 1001 + off))     # 1000 ids
+        r_extra = list(range(1001 + off, 1025 + off)) # 24 more -> ~1024
+        s_base = list(range(600 + off, 1601 + off))   # 1001 ids, overlaps r_base in [600,1000]
+        s_extra = list(range(1601 + off, 1625 + off)) # 24 more
+        r_delete = [1 + off, 2 + off, 3 + off, 4 + off, 5 + off]
+        s_delete = [600 + off, 601 + off, 602 + off, 603 + off, 604 + off]
+
+        schedule_r = [
+            {"day": "d0", "insert": r_base, "delete": [], "query": False, "maintenance": False},
+            {"day": "d1", "insert": [], "delete": [], "query": True, "maintenance": False},
+            {"day": "d2", "insert": r_extra, "delete": [], "query": True, "maintenance": True},
+            {"day": "d3", "insert": [], "delete": r_delete, "query": True, "maintenance": False},
+        ]
+        schedule_s = [
+            {"day": "d0", "insert": s_base, "delete": [], "query": False, "maintenance": False},
+            {"day": "d1", "insert": [], "delete": [], "query": True, "maintenance": False},
+            {"day": "d2", "insert": s_extra, "delete": [], "query": True, "maintenance": True},
+            {"day": "d3", "insert": [], "delete": s_delete, "query": True, "maintenance": False},
+        ]
+        return schedule_r, schedule_s
+
+    @staticmethod
+    def emit_e2e_schedule_pair(seed: int, out_r: str, out_s: str) -> None:
+        """Writes one E2E-1..4 schedule pair to `out_r`/`out_s` as real JSON
+        (party_main.cpp's --schedule format directly, NOT this module's own
+        line-based fixture convention -- E2E fixtures are consumed by the
+        `party` binary itself, not by a C++ test reading via
+        fixture_support.hpp). Asserts the pair is well-formed (R-SCHED2
+        pairing, exactly 3 query days) via Ref.simulate_days() before
+        writing anything.
+        """
+        schedule_r, schedule_s = Ref.make_e2e_schedule_pair(seed)
+        expected = Ref.simulate_days(schedule_r, schedule_s)
+        assert len(expected) == 3, f"seed={seed}: expected exactly 3 query days, got {len(expected)}"
+        import json
+        with open(out_r, "w") as f:
+            json.dump(schedule_r, f)
+        with open(out_s, "w") as f:
+            json.dump(schedule_s, f)
+
 
 def _selftest_minors() -> None:
     """MIN-2 worked row (task-11-brief.md R-MIN; .handoff/sympsica-test-
@@ -1315,9 +1483,30 @@ def _selftest_simulate_days() -> None:
     assert drifted, "_selftest_simulate_days: a query-flag pair mismatch must raise AssertionError"
 
 
+def _selftest_cut4() -> None:
+    """Lightweight generator self-check (task-19-brief.md, additive):
+    make_paired_day_schedule()/make_e2e_schedule_pair() each produce a
+    well-formed pair (R-SCHED2 pairing already asserted inside
+    Ref.simulate_days itself) with the query-day-count invariants their own
+    callers rely on. Deliberately small (one seed each, not the full
+    100-seed sweep) so import-time cost stays negligible -- mirrors
+    _selftest_minors()'s own "smaller than the full fixture sample" note.
+    """
+    sr, ss = Ref.make_paired_day_schedule(0, n_days=6, universe=150, insert_per_day=8)
+    assert len(sr) == 6 and len(ss) == 6
+    counts = Ref.simulate_days(sr, ss)
+    assert len(counts) >= 2, f"_selftest_cut4: need >=2 query days, got {len(counts)}"
+
+    er, es = Ref.make_e2e_schedule_pair(0)
+    e_counts = Ref.simulate_days(er, es)
+    assert len(e_counts) == 3, f"_selftest_cut4: e2e schedule must have exactly 3 query days, got {len(e_counts)}"
+    assert all(c >= 0 for c in e_counts)
+
+
 _selftest_minors()  # module self-test (R-MIN): always runs, aborts via AssertionError on failure
 _selftest_overflow()  # module self-test (task-18-brief.md SC5/FC3): always runs
 _selftest_simulate_days()  # module self-test (task-18-brief.md, R-ORACLE-AGNOSTIC): always runs
+_selftest_cut4()  # module self-test (task-19-brief.md, additive): always runs
 
 
 def _cli(argv: list[str]) -> int:
@@ -1348,6 +1537,18 @@ def _cli(argv: list[str]) -> int:
     emit_sd.add_argument("--seed", type=int, required=True)
     emit_sd.add_argument("--out", type=str, required=True)
 
+    emit_sched100 = sub.add_parser("emit-sched100",
+                                    help="emit SC1's 100-seed schedule sweep fixture (task-19-brief.md)")
+    emit_sched100.add_argument("--seed-lo", type=int, required=True)
+    emit_sched100.add_argument("--seed-hi", type=int, required=True)
+    emit_sched100.add_argument("--out", type=str, required=True)
+
+    emit_e2e = sub.add_parser("emit-e2e",
+                               help="emit one E2E-1..4 schedule pair as JSON (task-19-brief.md)")
+    emit_e2e.add_argument("--seed", type=int, required=True)
+    emit_e2e.add_argument("--out-r", type=str, required=True)
+    emit_e2e.add_argument("--out-s", type=str, required=True)
+
     args = parser.parse_args(argv)
     if args.cmd == "emit":
         Ref.emit_fixtures(args.seed, args.out)
@@ -1369,6 +1570,14 @@ def _cli(argv: list[str]) -> int:
     if args.cmd == "emit-sd":
         Ref.emit_sd_fixtures(args.seed, args.out)
         print(f"wrote {args.out} (seed={args.seed})")
+        return 0
+    if args.cmd == "emit-sched100":
+        Ref.emit_sched100_fixture(args.seed_lo, args.seed_hi, args.out)
+        print(f"wrote {args.out} (seeds={args.seed_lo}..{args.seed_hi})")
+        return 0
+    if args.cmd == "emit-e2e":
+        Ref.emit_e2e_schedule_pair(args.seed, args.out_r, args.out_s)
+        print(f"wrote {args.out_r}, {args.out_s} (seed={args.seed})")
         return 0
     return 1
 

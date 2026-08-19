@@ -191,6 +191,37 @@ summing to zero vs. a literal `Share{Fp(0)}` on both parties), not by
 asking `reference.py` for two different rows. SD-2 ("t = T = 4 exactly,
 pivot at bound") reads row index 4 directly.
 
+## `sched100.fixture` (task-19-brief.md SC1, W5.8)
+
+Golden source: `ref/reference.py`'s `Ref.make_paired_day_schedule()` (random
+day-schedule-pair generator, W5.7 per-party day format) + `Ref.simulate_days()`
+(expected per-query-day count replay). Regenerate with:
+
+```
+python3 ref/reference.py emit-sched100 --seed-lo 0 --seed-hi 34 --out test/fixtures/sched100.fixture
+```
+
+**Coverage reduction (documented, R-SCALE19):** the plan's literal "100
+randomized schedules" is reduced to **35** (seeds 0..34) here -- measured
+runtime at the full 100 would be ~440s (steady-state ~4.3s/schedule after a
+~11s one-time `Setup::run`), over the ~180s Release budget; 35 schedules
+measures ~161-171s (both via `ctest` and standalone). The assertion strength is unchanged: every schedule in
+the fixture must still match `reference.py` exactly at every query day (see
+`test/protocols_heavy/kat_schedule100.cpp`'s own top comment for the full
+calibration numbers).
+
+Ids are stored CONCRETE (same convention as every other fixture in this
+directory), so the C++ side never needs to replicate this file's PRNG
+stream.
+
+| key | values | meaning |
+|---|---|---|
+| `seed_lo` / `seed_hi` | `0` / `34` | the seed range this file covers |
+| `sched_count` | `35` | number of `sched` rows |
+| `sched` | `<seed> <n_days> <n_queries>` | one schedule's shape |
+| `day` | `<seed> <day_label> <query 0/1> <ins_r_count> <ins_r...> <del_r_count> <del_r...> <ins_s_count> <ins_s...> <del_s_count> <del_s...>` | one day of one schedule's PAIR (both parties' insert/delete lists for that day) |
+| `expected` | `<seed> <count...>` | `Ref.simulate_days()`'s golden per-query-day count sequence for that seed, in day order |
+
 ## Pinned PRNG: splitmix64
 
 Both `ref/reference.py` (`splitmix64_next`) and

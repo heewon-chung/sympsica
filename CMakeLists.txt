@@ -151,6 +151,13 @@ FetchContent_MakeAvailable(blake3 googletest)
 # R-NOFILTER's binding requirement.
 option(SYMPSICA_NO_FILTER "TEST-ONLY: disable Update::apply's step-1 filter (TV-F5 negative build)" OFF)
 
+# task-19-brief.md R-FCFLAGS: three more TEST-ONLY wrong-construction flags,
+# same SYMPSICA_NO_FILTER precedent (a separate build dir, never defined in
+# the default build) -- FC1/FC2/FC5's Phase-5 schedule/E2E-scale legs.
+option(SYMPSICA_WRONG_SIGN "TEST-ONLY: Sender uses +row instead of -row (FC1/TV-F8 negative build)" OFF)
+option(SYMPSICA_WRONG_CONVERT "TEST-ONLY: receiver-form convert() applied on both roles (FC2/TV-F9 negative build)" OFF)
+option(SYMPSICA_STALE_SIZES "TEST-ONLY: round-0's exchanged counterpart size is discarded (FC5 negative build)" OFF)
+
 option(SYMPSICA_BUILD_LIBOTE "Build vendored libOTe as a real CMake dependency" ON)
 if(SYMPSICA_BUILD_LIBOTE)
     # W0.3's SYMPSICA_SSE maps onto libOTe/cryptoTools's own ENABLE_SSE.
@@ -198,6 +205,15 @@ target_link_libraries(sympsica PUBLIC blake3)
 if(SYMPSICA_NO_FILTER)
     target_compile_definitions(sympsica PRIVATE SYMPSICA_NO_FILTER)
 endif()
+if(SYMPSICA_WRONG_SIGN)
+    target_compile_definitions(sympsica PRIVATE SYMPSICA_WRONG_SIGN)
+endif()
+if(SYMPSICA_WRONG_CONVERT)
+    target_compile_definitions(sympsica PRIVATE SYMPSICA_WRONG_CONVERT)
+endif()
+if(SYMPSICA_STALE_SIZES)
+    target_compile_definitions(sympsica PRIVATE SYMPSICA_STALE_SIZES)
+endif()
 if(SYMPSICA_BUILD_LIBOTE)
     # `libOTe` is the actual target name add_subdirectory() defines (see
     # vendor/libOTe/libOTe/CMakeLists.txt — no `oc::` ALIAS exists outside
@@ -214,6 +230,14 @@ endif()
 if(EXISTS "${CMAKE_SOURCE_DIR}/apps/party_main.cpp")
     add_executable(party "${CMAKE_SOURCE_DIR}/apps/party_main.cpp")
     target_link_libraries(party PRIVATE sympsica)
+endif()
+
+# task-19-brief.md SC3/R-CRASHDRV: the crash-matrix helper binary (see
+# apps/crash_probe.cpp's own top comment for why this exists alongside
+# `party`).
+if(EXISTS "${CMAKE_SOURCE_DIR}/apps/crash_probe.cpp")
+    add_executable(crash_probe "${CMAKE_SOURCE_DIR}/apps/crash_probe.cpp")
+    target_link_libraries(crash_probe PRIVATE sympsica)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -288,6 +312,19 @@ function(sympsica_add_test_target _dir_name _test_prefix)
         set(_extra_test_properties PROPERTIES TIMEOUT 900)
     elseif(_dir_name STREQUAL "utils")
         set(_extra_test_properties PROPERTIES TIMEOUT 60)
+    elseif(_dir_name STREQUAL "protocols_heavy")
+        # task-19-brief.md R-SCALE19 requirement 3: every heavy test needs
+        # ctest LABEL "heavy" (so `ctest -L heavy` runs the gate set) AND an
+        # explicit TIMEOUT ~3x its measured runtime. gtest_discover_tests'
+        # PROPERTIES apply per-TARGET (every test discovered from ONE
+        # add_executable), which is exactly why these three genuinely-heavy
+        # files (kat_schedule100.cpp ~155-160s, kat_tvf12_schedule.cpp
+        # ~142s, kat_clmb.cpp ~1.4s but plan-mandated to carry the label
+        # regardless) live in their OWN directory/target rather than mixed
+        # into test/protocols/ alongside every sub-second KAT there.
+        # TIMEOUT 600s covers ~3x the slowest measured leg (kat_schedule100,
+        # ~160s) with margin; see task-19-report.md's measured-runtime table.
+        set(_extra_test_properties PROPERTIES LABELS "heavy" TIMEOUT 600)
     endif()
     gtest_discover_tests(${_target} TEST_PREFIX "${_test_prefix}." ${_extra_test_properties})
 endfunction()
@@ -327,6 +364,12 @@ add_test(NAME core.GrepGuard_NoOpenCallSitesOutsideShare
 # "update" and keeps the plan's selector matching with no changes to test
 # suite/case naming.
 sympsica_add_test_target(protocols update)
+# test/protocols_heavy/*.cpp -> sympsica_tests_protocols_heavy, TEST_PREFIX
+# "heavy." (task-19-brief.md R-SCALE19 requirement 3: see the LABELS/TIMEOUT
+# comment inside sympsica_add_test_target above for why these three files
+# live in their own target). `ctest -R heavy` and `ctest -L heavy` both
+# select this whole set.
+sympsica_add_test_target(protocols_heavy heavy)
 
 # test/integration/*.cpp -> sympsica_tests_integration, TEST_PREFIX "integration."
 # (task-6 brief, addendum 10(i): sources now exist under test/integration/;
@@ -369,4 +412,37 @@ if(TARGET party)
     # normal case; this ctest TIMEOUT is the last-resort safety net if the
     # python3 driver process itself somehow wedges.
     set_tests_properties(e2e.SmokeTwoProcess PROPERTIES TIMEOUT 120)
+endif()
+
+# ---------------------------------------------------------------------------
+# task-19-brief.md SC2 [E2E-1..4]: four seed-fixed, two-OS-process schedules
+# at n~2^10 ids/party (test/e2e/fixtures/e2e_seed{0..3}_{r,s}.json).
+# R-SCALE19: "Expect minutes per schedule" -- LABEL "heavy" + a generous
+# TIMEOUT (measured runtimes recorded in task-19-report.md).
+# ---------------------------------------------------------------------------
+if(TARGET party)
+    foreach(_e2e_seed 0 1 2 3)
+        add_test(NAME e2e.E2E${_e2e_seed}_TwoProcessN1024
+            COMMAND python3 "${CMAKE_SOURCE_DIR}/test/e2e/run_e2e_gate.py"
+                    --party-bin "$<TARGET_FILE:party>"
+                    --reference "${CMAKE_SOURCE_DIR}/ref/reference.py"
+                    --schedule-r "${CMAKE_SOURCE_DIR}/test/e2e/fixtures/e2e_seed${_e2e_seed}_r.json"
+                    --schedule-s "${CMAKE_SOURCE_DIR}/test/e2e/fixtures/e2e_seed${_e2e_seed}_s.json"
+                    --workdir "${CMAKE_CURRENT_BINARY_DIR}/e2e_seed${_e2e_seed}_workdir"
+                    --timeout-s 900)
+        set_tests_properties(e2e.E2E${_e2e_seed}_TwoProcessN1024 PROPERTIES LABELS "heavy" TIMEOUT 900)
+    endforeach()
+endif()
+
+# ---------------------------------------------------------------------------
+# task-19-brief.md SC3 [CRASH-MATRIX]/R-CRASHDRV: the 5-point deterministic
+# crash matrix, driven by real subprocesses of `crash_probe`.
+# ---------------------------------------------------------------------------
+if(TARGET crash_probe)
+    add_test(NAME e2e.CrashMatrixFivePoint
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/test/e2e/run_crash_matrix.py"
+                --probe-bin "$<TARGET_FILE:crash_probe>"
+                --workdir "${CMAKE_CURRENT_BINARY_DIR}/crash_matrix_workdir"
+                --timeout-s 60)
+    set_tests_properties(e2e.CrashMatrixFivePoint PROPERTIES LABELS "heavy" TIMEOUT 180)
 endif()
