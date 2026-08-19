@@ -37,18 +37,26 @@ public:
                         bool counterpartAnnounced);
 };
 
+namespace detail {
+
 // commit(st, betas, new_shares, replace, state_path) — the ATOMIC COMMIT
 // shared by both Query::run paths (query.cpp's own top comment on this
 // function has the full FT6/W5.3/W5.4 semantics). Exposed here (moved out
-// of query.cpp's anonymous namespace, task-20-brief.md M1 fix round 1) so
-// test/protocols/kat_query.cpp's FC3 negative can invoke the REAL commit
-// logic directly instead of hand-deriving a comparison from already-real
-// numbers -- same "expose one internal for direct test invocation"
-// precedent as ZeroTest::check_canonical_entry (gates/ztest.hpp, TV-F3).
-// Not part of the class-based public API (Query::run is): a free function,
-// same as it always was, just no longer file-local.
+// of query.cpp's anonymous namespace, task-20-brief.md M1 fix round 1, then
+// namespaced round 2) so test/protocols/kat_query.cpp's FC3 negative can
+// invoke the REAL commit logic directly instead of hand-deriving a
+// comparison from already-real numbers. `detail` (not bare `sympsica`) is
+// this codebase's own established precedent for "internal, but needs
+// cross-TU reach including tests" -- core/pools.hpp's CorrelationPool<T> and
+// protocols/setup.hpp's SetupOtState both already live there; `commit` is a
+// generic enough name that it belongs beside them, not planted unqualified
+// at the top of a namespace that keeps growing. Not part of the class-based
+// public API (Query::run is): a free function, same as it always was, just
+// no longer file-local.
 void commit(PartyState& st, const std::vector<u32>& betas, const std::vector<Share>& new_shares,
             bool replace, const std::string& state_path);
+
+} // namespace detail
 
 // Query — Protocol 4 + full evaluation (task-17-brief.md W5.3/W5.4; design
 // doc §protocols/query.hpp). Dispatches per SwitchRule; every symmetric

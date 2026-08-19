@@ -789,10 +789,13 @@ TEST(Query, QRYINC_And_FC3_IncrementalEndToEndPlusDoubleCommitDrift) {
 // class defect this whole task exists to prevent).
 //
 // This dedicated, CHEAP (no MPC, no Channel, no dealer pools) test fixes
-// that by putting REAL production code (`commit()`, exposed from query.cpp's
-// anonymous namespace for exactly this purpose -- see query.hpp's own
+// that by putting REAL production code (`detail::commit()`, exposed from
+// query.cpp's anonymous namespace into `namespace detail` -- this
+// codebase's own precedent for "internal, but needs cross-TU reach
+// including tests", core/pools.hpp's CorrelationPool<T> / protocols/
+// setup.hpp's SetupOtState, task-20 fix round 2 -- see query.hpp's own
 // comment) on one side of the comparison instead of hand arithmetic: a
-// single real `commit()` call, from a fresh (empty-cache, zero-t_share)
+// single real `detail::commit()` call, from a fresh (empty-cache, zero-t_share)
 // PartyState, on synthetic betas/new_shares whose delta is known a priori
 // (sum(new_shares) = 40+9 = 49, since the cache starts empty so every
 // old_val is 0). The closed-form target (49) is an INDEPENDENT prediction,
@@ -810,7 +813,7 @@ TEST(Query, FC3_StructuralShape_RealCommitSingleDeltaMatchesClosedFormPrediction
     const std::string path = scratch_path("fc3_structural_commit.bin");
     clear_path(path);
 
-    commit(st, betas, new_shares, /*replace=*/false, path);
+    detail::commit(st, betas, new_shares, /*replace=*/false, path);
 
     EXPECT_EQ(st.t_share.v.v, Fp(49).v)
         << "FC3 [M1, fix round 1]: a single real commit() call, starting from an empty cache, "

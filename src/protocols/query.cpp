@@ -186,6 +186,8 @@ std::pair<std::vector<u32>, std::vector<Share>> eval_union(Role role, const Part
 
 } // namespace
 
+namespace detail {
+
 // commit(...) — the ATOMIC COMMIT shared by both paths (FT6: only ever
 // called AFTER eval_union has fully returned). `replace` selects W5.4's
 // REPLACE semantics (cache := exactly {beta -> new[beta] : beta in
@@ -194,12 +196,14 @@ std::pair<std::vector<u32>, std::vector<Share>> eval_union(Role role, const Part
 //
 // Task-20 fix round 1 (M1): moved OUT of the anonymous namespace above (and
 // declared in query.hpp) so test/protocols/kat_query.cpp's FC3 negative can
-// call the REAL commit twice on synthetic data instead of hand-deriving both
+// call the REAL commit once on synthetic data instead of hand-deriving both
 // sides of a comparison from the same two numbers (which was a tautology --
-// see kat_query.cpp's own FC3 comment). Same "expose one internal for direct
-// test invocation" precedent as ZeroTest::check_canonical_entry
-// (include/sympsica/gates/ztest.hpp, TV-F3) -- no live Channel / no
-// networking either way, so this is a pure, cheap local call.
+// see kat_query.cpp's own FC3 comment). Fix round 2: placed in `detail`,
+// this codebase's own established precedent for "internal, but needs
+// cross-TU reach including tests" (core/pools.hpp's CorrelationPool<T>,
+// protocols/setup.hpp's SetupOtState) -- see query.hpp's own comment. No
+// live Channel / no networking either way, so this is a pure, cheap local
+// call.
 void commit(PartyState& st, const std::vector<u32>& betas, const std::vector<Share>& new_shares,
             bool replace, const std::string& state_path) {
     if (replace) {
@@ -242,6 +246,8 @@ void commit(PartyState& st, const std::vector<u32>& betas, const std::vector<Sha
     crash_point("pre-serialize");
     st.save(state_path);
 }
+
+} // namespace detail
 
 namespace {
 
@@ -304,7 +310,7 @@ Share run_incremental(Role role, PartyState& st, Pools& pools, Channel& ch,
     }
 
     auto [betas, new_shares] = eval_union(role, st, pools, ch, union_set);
-    commit(st, betas, new_shares, /*replace=*/false, state_path);
+    detail::commit(st, betas, new_shares, /*replace=*/false, state_path);
     return convert(role, st.t_share, my_size, counterpart_size);
 }
 
@@ -382,7 +388,7 @@ Share run_full(Role role, PartyState& st, Pools& pools, Channel& ch, const std::
     for (u64 v : their_supports) union_set.insert(static_cast<u32>(v));
 
     auto [betas, new_shares] = eval_union(role, st, pools, ch, union_set);
-    commit(st, betas, new_shares, /*replace=*/true, state_path);
+    detail::commit(st, betas, new_shares, /*replace=*/true, state_path);
     return convert(role, st.t_share, my_size, counterpart_size);
 }
 
