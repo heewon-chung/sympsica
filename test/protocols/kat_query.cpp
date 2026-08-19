@@ -773,20 +773,51 @@ TEST(Query, QRYINC_And_FC3_IncrementalEndToEndPlusDoubleCommitDrift) {
         << "FC3: applying the same commit delta a second time must drift t_share away from the "
            "correct (single-commit) value";
 
-    // M1 (task-20-brief.md, carried minor from the Phase-5 gate review):
-    // the EXPECT_NE above alone would be satisfied by ANY unrelated wrong
-    // value, not specifically the "double-applied the same delta" defect.
-    // Pin the STRUCTURAL SHAPE of the drift in closed form: double-applying
-    // delta must land exactly on before_commit + 2*delta (added, not
-    // replacing the check above).
-    const Fp expected_doubled_delta = t_share_before_commit.add(delta).add(delta);
-    EXPECT_EQ(buggy_double_apply.v, expected_doubled_delta.v)
-        << "FC3 [M1]: the double-applied value must equal before_commit + 2*delta exactly -- "
-           "pinning the drift's structural shape so this negative cannot be satisfied by an "
-           "unrelated wrong value that merely happens to differ from the correct one";
-
     clear_path(path_r);
     clear_path(path_s);
+}
+
+// ---------------------------------------------------------------------------
+// FC3 [M1, task-20-brief.md, fix round 1]: the STRUCTURAL-SHAPE assertion
+// carried as a minor from the Phase-5 gate review. Fix round 1's own review
+// caught that the first attempt at this (folded into QRYINC_And_FC3 above)
+// was a TAUTOLOGY: both sides were hand-derived, via ordinary Fp group
+// arithmetic, from the SAME two real numbers (t_share_before_commit,
+// t_share_after_commit) -- `after + delta` and `before + delta + delta` are
+// algebraically identical to `2*after - before` regardless of what those two
+// numbers actually are, so the EXPECT_EQ could never fail (the exact FC4-
+// class defect this whole task exists to prevent).
+//
+// This dedicated, CHEAP (no MPC, no Channel, no dealer pools) test fixes
+// that by putting REAL production code (`commit()`, exposed from query.cpp's
+// anonymous namespace for exactly this purpose -- see query.hpp's own
+// comment) on one side of the comparison instead of hand arithmetic: a
+// single real `commit()` call, from a fresh (empty-cache, zero-t_share)
+// PartyState, on synthetic betas/new_shares whose delta is known a priori
+// (sum(new_shares) = 40+9 = 49, since the cache starts empty so every
+// old_val is 0). The closed-form target (49) is an INDEPENDENT prediction,
+// not derived from the real call's own output -- a real defect in commit()'s
+// delta computation (wrong sign, double-add, missed accumulation, ...) would
+// make the real t_share diverge from it. Demonstrated actually failing
+// against SYMPSICA_DOUBLE_APPLY_COMMIT=ON (a literal reproduction of FC3's
+// "delta applied twice" bug inside commit() itself) -- see task-20-report.md
+// Fix round 1 for the real command + output.
+TEST(Query, FC3_StructuralShape_RealCommitSingleDeltaMatchesClosedFormPrediction) {
+    PartyState st;
+    st.t_share = Share{Fp(0)}; // Fp default-constructs UNINITIALIZED (field.hpp); must set explicitly
+    const std::vector<u32> betas{5, 7};
+    const std::vector<Share> new_shares{Share{Fp(40)}, Share{Fp(9)}};
+    const std::string path = scratch_path("fc3_structural_commit.bin");
+    clear_path(path);
+
+    commit(st, betas, new_shares, /*replace=*/false, path);
+
+    EXPECT_EQ(st.t_share.v.v, Fp(49).v)
+        << "FC3 [M1, fix round 1]: a single real commit() call, starting from an empty cache, "
+           "must apply the delta (sum of new_shares, since every old_val is 0) EXACTLY ONCE -- "
+           "the closed-form target 49 is predicted independently of commit()'s own output";
+
+    clear_path(path);
 }
 
 // ---------------------------------------------------------------------------

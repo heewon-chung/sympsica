@@ -159,6 +159,17 @@ option(SYMPSICA_WRONG_CONVERT "TEST-ONLY: receiver-form convert() applied on bot
 option(SYMPSICA_STALE_SIZES "TEST-ONLY: round-0's exchanged counterpart size is discarded (FC5 negative build)" OFF)
 option(SYMPSICA_WRONG_BOUNDARY "TEST-ONLY: SwitchRule::decide's boundary relaxed to >= (FC4/TV-F12 negative build, R-FC4-REAL)" OFF)
 
+# task-20-brief.md M1 fix round 1 (R6-NOTAUTO): same SYMPSICA_NO_FILTER
+# precedent -- a TEST-ONLY flag, default OFF, reproducing the literal FC3
+# bug ("double-applying the SAME commit delta drifts t_share") inside
+# commit()'s real incremental branch (src/protocols/query.cpp), so
+# kat_query.cpp's structural-shape assertion can be demonstrated FAILING
+# against a real (not hand-derived) wrong value instead of shipping a
+# tautological closed-form check. Not a TV-F row (query.cpp's own #ifdef,
+# same as SYMPSICA_STALE_SIZES) -- used for a one-off local verification
+# build, not a persistent build-*/ dir (see task-20-report.md Fix round 1).
+option(SYMPSICA_DOUBLE_APPLY_COMMIT "TEST-ONLY: commit()'s incremental delta applied twice (M1 fix round 1 negative)" OFF)
+
 option(SYMPSICA_BUILD_LIBOTE "Build vendored libOTe as a real CMake dependency" ON)
 if(SYMPSICA_BUILD_LIBOTE)
     # W0.3's SYMPSICA_SSE maps onto libOTe/cryptoTools's own ENABLE_SSE.
@@ -217,6 +228,9 @@ if(SYMPSICA_STALE_SIZES)
 endif()
 if(SYMPSICA_WRONG_BOUNDARY)
     target_compile_definitions(sympsica PRIVATE SYMPSICA_WRONG_BOUNDARY)
+endif()
+if(SYMPSICA_DOUBLE_APPLY_COMMIT)
+    target_compile_definitions(sympsica PRIVATE SYMPSICA_DOUBLE_APPLY_COMMIT)
 endif()
 if(SYMPSICA_BUILD_LIBOTE)
     # `libOTe` is the actual target name add_subdirectory() defines (see

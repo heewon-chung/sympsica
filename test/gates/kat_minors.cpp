@@ -429,7 +429,16 @@ TEST(GatesMinors, MIN3_InteriorAccidentalZero_MaxRuleTVF7) {
 // PINS the correct (max-rule) t and documents the rejected "first zero
 // minor" rule in a comment; this test makes that rejected rule EXECUTABLE
 // on MIN-3's own interior-zero fixture rows and asserts it disagrees with
-// the true t on every one of them.
+// the REAL MinorCircuit::t_of on every one of them.
+//
+// Fix round 1 (task-20-brief.md, controller Finding 2): the first version of
+// this test compared the hand-computed first-zero rule against the
+// FIXTURE's own `t_expected` column and never called MinorCircuit::t_of at
+// all -- a regression of t_of TO the rejected first-zero rule would have
+// left this test green (only the untouched pre-existing MIN3 test would
+// have caught it). Fixed by calling the REAL t_of() directly, so this test
+// is now sensitive to exactly the regression it claims to guard against
+// (demonstrated failing, see task-20-report.md Fix round 1).
 TEST(GatesMinors, TVF7_FirstZeroRuleMisreadsInteriorZeroCases) {
     sympsica_test::Fixture fx(sympsica_test::fixture_path("test/fixtures/min0.fixture"));
     const auto rows = fx.all("min3");
@@ -440,10 +449,12 @@ TEST(GatesMinors, TVF7_FirstZeroRuleMisreadsInteriorZeroCases) {
         ASSERT_EQ(row.size(), 13u);
         std::array<Fp, 4> D{};
         for (int i = 0; i < 4; ++i) D[i] = Fp(std::stoull(row[8 + i]));
-        const u64 t_expected = std::stoull(row[12]);
 
         if (!D[0].is_zero()) continue; // not an interior-zero case: TV-F7 does not apply
         exercised_interior_zero = true;
+
+        // The REAL rule under test, called directly.
+        const u64 t_real = MinorCircuit::t_of(D);
 
         // The rejected rule: t = index (1-based) of the FIRST zero D_i,
         // or 0 if none are zero. D[0] is zero by construction here, so
@@ -454,9 +465,9 @@ TEST(GatesMinors, TVF7_FirstZeroRuleMisreadsInteriorZeroCases) {
         }
         ASSERT_EQ(first_zero_t, 1u)
             << "test precondition: D_1 == 0 must make the first-zero rule report t=1";
-        EXPECT_NE(first_zero_t, t_expected)
-            << "TV-F7: the first-zero rule must misreport t on an interior-zero case whose true "
-               "t (max rule) is " << t_expected;
+        EXPECT_NE(first_zero_t, t_real)
+            << "TV-F7: the first-zero rule must misreport t vs the REAL MinorCircuit::t_of on an "
+               "interior-zero case (t_of returned " << t_real << ")";
     }
     ASSERT_TRUE(exercised_interior_zero)
         << "test precondition: min3 fixture must contain at least one interior-zero (D_1=0) row";

@@ -130,11 +130,14 @@ constexpr std::array<Row, 17> kRegistry{{
  "report t=1 on MIN-3's interior-accidental-zero fixture rows (D_1=0, true t in {2,3,4} via the "
  "max rule). Task-20 NEW WORK (R6-FSUITE): MIN-3 itself only PINNED the correct (max-rule) t and "
  "documented the rejected rule in a comment; TVF7_FirstZeroRuleMisreadsInteriorZeroCases makes it "
- "EXECUTABLE against the same fixture rows",
+ "EXECUTABLE against the same fixture rows. Fix round 1 (controller Finding 2): the first version "
+ "compared against the fixture's own t_expected column and never called MinorCircuit::t_of, so a "
+ "regression of t_of TO this rejected rule would have left it green; fixed to call the REAL t_of "
+ "directly and demonstrated failing under that exact regression (see task-20-report.md)",
  "ctest --test-dir build -R 'GatesMinors\\.TVF7_FirstZeroRuleMisreadsInteriorZeroCases'",
  "PASSED (task-20, this run): every interior-zero (D_1=0) row in test/fixtures/min0.fixture's "
- "min3 set had first_zero_t=1 != t_expected (true t via the max rule) -- the rejected rule "
- "misreports on every one",
+ "min3 set had first_zero_t=1 != MinorCircuit::t_of(D) (the REAL rule, called directly) -- the "
+ "rejected rule misreports on every one",
  "", ""},
 
 {"TV-F8", RowState::kCovered,
@@ -238,9 +241,9 @@ constexpr std::array<Row, 17> kRegistry{{
  "bench/measure.sh (bench harness: bytes reported as sent+received instead of per-party OUTGOING)",
  "the harness self-test (known 10 MB blob reads ~20 MB if sent+received) has no subject code at "
  "Phase 6; per .handoff/sympsica-plan.md's Phase->file ownership table (line 547), bench/measure.sh "
- "is created in Phase 8. NOTE (task-20 finding, see task-20-report.md): the controller ruling's "
- "own prose pinned this to \"Phase 9\" -- the plan's file-ownership table this task actually "
- "reconciled against says Phase 8; recorded as Phase 8 here, flagged for controller confirmation",
+ "is created in Phase 8. NOTE (task-20 finding, controller-CONFIRMED in fix round 1): the "
+ "controller's own initial ruling prose said \"Phase 9\" but confirmed Phase 8 is correct after "
+ "checking the plan's own ownership table -- Phase 8 stands as recorded",
  "", "",
  "Phase 8", "bench/measure.sh"},
 
@@ -248,8 +251,8 @@ constexpr std::array<Row, 17> kRegistry{{
  "bench/netem.sh (bench harness: netem delay applied once on loopback vs loopback traversing twice)",
  "the RTT calibration check (reads ~40ms vs target 80ms -> abort) has no subject code at Phase 6; "
  "per .handoff/sympsica-plan.md's Phase->file ownership table (line 547), bench/netem.sh is "
- "created in Phase 8. NOTE (task-20 finding, see task-20-report.md): same Phase 8-vs-9 discrepancy "
- "as TV-F15 -- recorded as Phase 8 here, flagged for controller confirmation",
+ "created in Phase 8. NOTE (task-20 finding, controller-CONFIRMED in fix round 1): same Phase "
+ "8-vs-9 discrepancy as TV-F15, resolved the same way -- Phase 8 stands as recorded",
  "", "",
  "Phase 8", "bench/netem.sh"},
 
@@ -258,7 +261,7 @@ constexpr std::array<Row, 17> kRegistry{{
  "\"executable baselines/<name>/run.sh --config c.json\")",
  "feeding deletions to the BMS+24 add-only wrapper must REFUSE (explicit error, exit 2 + message "
  "per .handoff/sympsica-plan.md W8.1), never silently drop them; has no subject code at Phase 6 -- "
- "baselines/ is created in Phase 8",
+ "baselines/ is created in Phase 8. Path controller-CONFIRMED in fix round 1 (task-20-report.md)",
  "", "",
  "Phase 8", "baselines/bms24/run.sh"},
 }};

@@ -184,11 +184,22 @@ std::pair<std::vector<u32>, std::vector<Share>> eval_union(Role role, const Part
     return {std::move(betas), std::move(new_shares)};
 }
 
+} // namespace
+
 // commit(...) — the ATOMIC COMMIT shared by both paths (FT6: only ever
 // called AFTER eval_union has fully returned). `replace` selects W5.4's
 // REPLACE semantics (cache := exactly {beta -> new[beta] : beta in
 // union}, t_share := sum(new)) vs W5.3's ACCUMULATE semantics (cache/
 // t_share updated only for buckets in `union`, everything else untouched).
+//
+// Task-20 fix round 1 (M1): moved OUT of the anonymous namespace above (and
+// declared in query.hpp) so test/protocols/kat_query.cpp's FC3 negative can
+// call the REAL commit twice on synthetic data instead of hand-deriving both
+// sides of a comparison from the same two numbers (which was a tautology --
+// see kat_query.cpp's own FC3 comment). Same "expose one internal for direct
+// test invocation" precedent as ZeroTest::check_canonical_entry
+// (include/sympsica/gates/ztest.hpp, TV-F3) -- no live Channel / no
+// networking either way, so this is a pure, cheap local call.
 void commit(PartyState& st, const std::vector<u32>& betas, const std::vector<Share>& new_shares,
             bool replace, const std::string& state_path) {
     if (replace) {
@@ -206,7 +217,18 @@ void commit(PartyState& st, const std::vector<u32>& betas, const std::vector<Sha
             delta = delta.add(new_shares[i].v.sub(old_val));
             st.cache[betas[i]] = new_shares[i];
         }
+#ifdef SYMPSICA_DOUBLE_APPLY_COMMIT
+        // task-20-brief.md M1 fix round 1 (R6-NOTAUTO): TEST-ONLY wrong
+        // construction -- literally reproduces FC3's described bug
+        // ("double-applying the SAME commit delta drifts t_share") by
+        // applying `delta` twice instead of once. NEVER defined in the
+        // default build (option defaults OFF, SYMPSICA_NO_FILTER
+        // precedent); exists only so kat_query.cpp's structural-shape
+        // assertion can be demonstrated failing against a REAL wrong value.
+        st.t_share.v = st.t_share.v.add(delta).add(delta);
+#else
         st.t_share.v = st.t_share.v.add(delta);
+#endif
     }
     st.J.clear();
     ++st.query_no;
@@ -220,6 +242,8 @@ void commit(PartyState& st, const std::vector<u32>& betas, const std::vector<Sha
     crash_point("pre-serialize");
     st.save(state_path);
 }
+
+namespace {
 
 // INV2 = (P+1)/2 = 2^60 exactly (P = 2^61-1 is odd; 2*2^60 = 2^61 = P+1 ==
 // 1 mod P) -- R-CONVERT's field inverse of 2.
