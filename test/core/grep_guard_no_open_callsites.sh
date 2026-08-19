@@ -23,6 +23,14 @@
 # Match is a WORD-BOUNDARY "open(" (grep -E '\bopen\(') so this does not
 # false-positive on is_open()/fopen()/etc. (both already appear in
 # src/core/state.cpp's save()/load()).
+#
+# task-18-brief.md R-OPEN: the final count opening has landed --
+# src/protocols/query.cpp's `Query::open_count()` is the ONE legitimate
+# production call site (both parties call it, symmetrically, to learn the
+# public count after Query::run/SaltManager::refresh). Whitelisted
+# file-precise (not a directory blanket): query.cpp contains exactly this
+# one `open(` call, so excluding the file is equivalent to excluding the
+# exact call site.
 set -eu
 
 if [ "$#" -ne 1 ]; then
@@ -35,6 +43,7 @@ matches=$(grep -rn -E '\bopen\(' "$SRC_DIR/src" "$SRC_DIR/include" \
     --include='*.hpp' --include='*.cpp' \
     | grep -v '/core/share\.hpp:' \
     | grep -v '/core/share\.cpp:' \
+    | grep -v '/protocols/query\.cpp:' \
     || true)
 
 if [ -n "$matches" ]; then

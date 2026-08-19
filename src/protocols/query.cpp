@@ -318,12 +318,16 @@ SwitchRule::Path SwitchRule::decide(const Params& pp, u64 nA, u64 nB, u64 myJ, b
 }
 
 Share Query::run(Role role, PartyState& st, Pools& pools, Channel& ch, const Params& params,
-                  const std::string& state_path, u64 seed) {
+                  const std::string& state_path, u64 seed, bool force_full,
+                  SwitchRule::Path* path_out) {
     (void)params;
     const bool first_query = (st.query_no == 0);
     const bool my_announce = (st.J.size() > Params::U_MAX);
 
     // Round 0 (R-ROUND0): fixed 9-byte record {u64 my_size, u8 announce}.
+    // Runs UNCONDITIONALLY, even when force_full is set (task-18-brief.md
+    // R-FORCEFULL): the counterpart's size is still needed by convert()
+    // below regardless of how the path was chosen.
     u8 out0[9];
     write_u64_le(out0, st.my_size);
     out0[8] = my_announce ? 1 : 0;
@@ -332,8 +336,18 @@ Share Query::run(Role role, PartyState& st, Pools& pools, Channel& ch, const Par
     const u64 counterpart_size = read_u64_le(in0);
     const bool counterpart_announce = in0[8] != 0;
 
-    SwitchRule::Path path = SwitchRule::decide(params, st.my_size, counterpart_size, st.J.size(),
-                                                first_query, counterpart_announce);
+    // R-FORCEFULL: force_full skips SwitchRule::decide() entirely and takes
+    // the full path directly -- FullPublic is the forced value (not
+    // FullAnnounced): both land on the identical run_full() branch below
+    // (the switch's case list already merges them), so the choice of which
+    // literal enumerator to force is purely cosmetic UNLESS a caller reads
+    // it back via path_out, in which case FullPublic is the semantically
+    // correct label (maintenance's "supports exchange; no announce bit").
+    SwitchRule::Path path = force_full
+                                 ? SwitchRule::Path::FullPublic
+                                 : SwitchRule::decide(params, st.my_size, counterpart_size,
+                                                       st.J.size(), first_query, counterpart_announce);
+    if (path_out != nullptr) *path_out = path;
 
     switch (path) {
         case SwitchRule::Path::Incremental:
@@ -347,5 +361,7 @@ Share Query::run(Role role, PartyState& st, Pools& pools, Channel& ch, const Par
                              "(internal bug)");
     return Share{Fp(0)}; // unreachable; SYMPSICA_REQUIRE(false, ...) aborts above.
 }
+
+u64 Query::open_count(Channel& ch, Share mine) { return open(ch, mine).v; }
 
 } // namespace sympsica

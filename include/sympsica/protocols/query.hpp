@@ -63,10 +63,39 @@ public:
 //
 // Both deltas are used exactly once, purely to satisfy needs the plan text
 // itself imposes on this function -- see task-17-report.md.
+//
+// TASK-18 ADDITIVE EXTENSIONS (task-18-brief.md; do NOT restructure
+// anything above -- both are new trailing default-valued parameters):
+//
+//   3. R-FORCEFULL: `bool force_full = false`. Round 0 (my_size/announce
+//      exchange) still always runs -- SaltManager::refresh's own convert()
+//      step needs the counterpart's size exactly like any other query --
+//      but when true, path selection SKIPS SwitchRule::decide() entirely
+//      and goes straight to the full path (run_full's FullPublic/REPLACE
+//      semantics: supports exchange, no announce bit), which is exactly
+//      what a maintenance event's "immediately run Query full path" step
+//      needs.
+//
+//   4. `SwitchRule::Path* path_out = nullptr` (R-JSONL support): when
+//      non-null, receives the path actually taken (the forced value when
+//      `force_full` is set). Query::run's return value is only the count
+//      Share -- callers that need to LABEL a query event (party_main's
+//      JSONL "path" field) have no other way to learn which branch ran
+//      without duplicating round 0's own networking.
 class Query {
 public:
     static Share run(Role role, PartyState& st, Pools& pools, Channel& ch, const Params& params,
-                      const std::string& state_path, u64 seed);
+                      const std::string& state_path, u64 seed, bool force_full = false,
+                      SwitchRule::Path* path_out = nullptr);
+
+    // open_count(ch, mine) — R-OPEN (task-18-brief.md): the ONE production
+    // call site for core/share.hpp's `open` function outside test/** and
+    // core/share.{hpp,cpp} themselves (grep-guard's reserved exclusion,
+    // test/core/grep_guard_no_open_callsites.sh). Both parties call this
+    // with their own Query::run/SaltManager::refresh return value (the
+    // converted-but-unopened count Share) to learn the public count --
+    // intentionally symmetric, neither party is a designated "revealer".
+    static u64 open_count(Channel& ch, Share mine);
 };
 
 } // namespace sympsica

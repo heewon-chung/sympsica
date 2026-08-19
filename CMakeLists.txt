@@ -343,3 +343,30 @@ sympsica_add_test_target(integration integration)
 # under test/integration/ are now thin forwarding shims to
 # include/sympsica/protocols/detail/.
 sympsica_add_test_target(gates gates)
+
+# ---------------------------------------------------------------------------
+# task-18-brief.md R-E2E-DRIVER (SC6): the two-OS-process smoke E2E for
+# apps/party_main.cpp. NOT a gtest binary (test/e2e/run_smoke.py is plain
+# python3, stdlib only) -- registered directly via add_test, same idiom as
+# the R-GREP grep-guard above. Only wired when the `party` target actually
+# exists (apps/party_main.cpp is Phase-5-owned, same EXISTS guard the
+# executable's own definition above uses); the binary path is threaded in
+# via $<TARGET_FILE:party> (a build-time generator expression), never a
+# hardcoded path, so it tracks wherever the build actually places it across
+# platforms/generators.
+# ---------------------------------------------------------------------------
+if(TARGET party)
+    add_test(NAME e2e.SmokeTwoProcess
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/test/e2e/run_smoke.py"
+                --party-bin "$<TARGET_FILE:party>"
+                --reference "${CMAKE_SOURCE_DIR}/ref/reference.py"
+                --fixtures-dir "${CMAKE_SOURCE_DIR}/test/e2e/fixtures"
+                --workdir "${CMAKE_CURRENT_BINARY_DIR}/e2e_smoke_workdir"
+                --timeout-s 90)
+    # Generous-but-real ctest-level TIMEOUT (task-18-brief.md R-E2E-DRIVER),
+    # strictly larger than the script's own --timeout-s=90 internal budget
+    # so the script's own kill-and-FAIL path is what fires first in the
+    # normal case; this ctest TIMEOUT is the last-resort safety net if the
+    # python3 driver process itself somehow wedges.
+    set_tests_properties(e2e.SmokeTwoProcess PROPERTIES TIMEOUT 120)
+endif()

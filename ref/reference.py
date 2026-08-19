@@ -210,6 +210,80 @@ def _hankel4(d: Sequence[int], p: int = P) -> list[list[int]]:
     return [[dd[i + j] for j in range(4)] for i in range(4)]
 
 
+# ---------------------------------------------------------------------------
+# task-18-brief.md W5.6 (SCOPE DECISION, no implementer discretion): the
+# depth-T' overflow detector generalizes _hankel4/Ref.minors_det from a
+# fixed depth 4 to an arbitrary depth n. _det_bareiss/_det_expansion are
+# ALREADY n-agnostic (plain n x n elimination / permutation expansion, see
+# their own docstrings above); only the Hankel-matrix construction and the
+# max-nonzero-leading-minor rank rule needed generalizing.
+# ---------------------------------------------------------------------------
+
+
+def _hankel_n(d: Sequence[int], n: int, p: int = P) -> list[list[int]]:
+    """Generalization of _hankel4 to an arbitrary depth n: the n x n Hankel
+    matrix H[i][j] = d_{i+j-1} (1-indexed), 0-indexed as H0[i][j] = dd[i+j]
+    where dd[0] = d_1. Requires len(d) >= 2*n-1 (the bottom-right entry
+    needs d_{2n-1})."""
+    assert len(d) >= 2 * n - 1, f"_hankel_n: need >= {2 * n - 1} syndrome terms for depth {n}, got {len(d)}"
+    dd = [x % p for x in d]
+    return [[dd[i + j] for j in range(n)] for i in range(n)]
+
+
+def _minors_det_n(d: Sequence[int], n: int, p: int = P) -> tuple[int, ...]:
+    """Generalization of Ref.minors_det to an arbitrary depth n: D_1..D_n,
+    the leading principal minors of the n x n Hankel matrix built from `d`,
+    via the SAME fraction-free Bareiss elimination (falling back to exact
+    Leibniz expansion on an interior zero pivot) Ref.minors_det already uses
+    for n=4."""
+    H = _hankel_n(d, n, p)
+    Ds: list[int] = []
+    for k in range(1, n + 1):
+        sub = [row[:k] for row in H[:k]]
+        det = _det_bareiss(sub)
+        if det is None:
+            det = _det_expansion(sub)
+        Ds.append(det % p)
+    return tuple(Ds)
+
+
+def _t_of_n(d: Sequence[int], n: int, p: int = P) -> int:
+    """Generalization of Ref.t_of to an arbitrary depth n: the largest tau
+    in 1..n with D_tau != 0, else 0 (Remark 1's max-nonzero-index rule,
+    generalized). STRUCTURALLY bounded by n: an n x n Hankel test can never
+    report a rank greater than n (there are only n leading principal
+    minors to examine) -- this is exactly what makes FC3 (t_prime=4)
+    provably incapable of flagging a true-rank-5 bucket, rather than
+    "happening" not to.
+    """
+    D = _minors_det_n(d, n, p)
+    t = 0
+    for tau in range(1, n + 1):
+        if D[tau - 1] % p != 0:
+            t = tau
+    return t
+
+
+_GENERATOR_CACHE: dict[int, int] = {}
+
+
+def _generator(p: int = P) -> int:
+    """Lazily-cached find_generator(p) -- detect_overflow (below) needs a
+    generator to compute sigma()-power sums but is not itself given one
+    (task-18-brief.md's literal signature is `detect_overflow(A, B, oracle,
+    Tprime=7)`, no `g` parameter); reusing the single canonical generator
+    (37, for p=P) avoids re-deriving it on every call."""
+    if p not in _GENERATOR_CACHE:
+        _GENERATOR_CACHE[p] = find_generator(p)
+    return _GENERATOR_CACHE[p]
+
+
+# T_CAP mirrors Params::T (params.hpp) -- the real protocol's stored-table
+# rank cap; detect_overflow flags a bucket whose DEEP (depth-2T'-1) rank
+# exceeds this, i.e. a true multiplicity the T=4 circuit cannot represent.
+T_CAP = 4
+
+
 class Ref:
     """Plaintext reference for sympsica's power-sum / syndrome primitives
     (task-3-brief.md W1.7, verbatim signatures).
@@ -948,6 +1022,134 @@ class Ref:
         with open(out_path, "w") as f:
             f.write("\n".join(lines) + "\n")
 
+    # -------------------------------------------------------------------
+    # Cut 3 (task-18-brief.md W5.7/W5.6, ADDITIVE -- cut-1/cut-2 sections
+    # above are byte-identical to before this cut). R-ORACLE-AGNOSTIC:
+    # this module never ports BucketOracle (a BLAKE3 ROM instantiation);
+    # simulate_days() only needs bucket-independent |A intersect B|
+    # counting (no-overflow assumption), and detect_overflow() takes the
+    # oracle as an injected callable instead.
+    # -------------------------------------------------------------------
+
+    @staticmethod
+    def simulate_days(schedule_r: Sequence[dict], schedule_s: Sequence[dict]) -> list[int]:
+        """Day-schedule simulator for the W5.7 PAIR format (task-18-brief.md
+        R-ORACLE-AGNOSTIC), additive alongside Ref.simulate()'s OLD
+        {"n_init","epochs"} format above (untouched, not called by this).
+
+        `schedule_r`/`schedule_s` are two lists in the SAME per-party
+        format apps/party_main.cpp's own `--schedule` files use: each day
+        is `{"day": str, "insert": [ids], "delete": [ids], "query": bool,
+        "maintenance": bool}`. A schedule PAIR is generated together
+        (R-SCHED2: same day sequence, same query/maintenance markers), so
+        this asserts that pairing holds (day string, query flag,
+        maintenance flag agree at every index) -- the same invariant
+        party_main's own ScheduleSync::sync() enforces at the C++ level,
+        checked here so a malformed test fixture fails loudly in Python
+        too, before ever reaching a two-process run.
+
+        Each party's own id set evolves LOCALLY via update_filter() from
+        its own insert/delete lists (mirrors Update::apply's zero-
+        communication semantics -- no channel is modeled). On a day with
+        "query": true, records len(ids_r intersect ids_s) -- oracle-
+        INDEPENDENT (R-ORACLE-AGNOSTIC: |A intersect B| does not depend on
+        how ids are bucketed, only WHICH ids are held, as long as no
+        bucket's true multiplicity overflows T -- see detect_overflow for
+        the deep-scan check of that assumption). Returns the list of
+        expected counts, in day order, one per query day.
+        """
+        assert len(schedule_r) == len(schedule_s), "simulate_days: schedule pair length mismatch"
+        ids_r: set[int] = set()
+        ids_s: set[int] = set()
+        counts: list[int] = []
+        for day_r, day_s in zip(schedule_r, schedule_s):
+            assert day_r["day"] == day_s["day"], (
+                f"simulate_days: day mismatch {day_r['day']!r} vs {day_s['day']!r} (R-SCHED2 pair drift)"
+            )
+            assert day_r["query"] == day_s["query"], (
+                f"simulate_days: query-flag mismatch on {day_r['day']!r} (R-SCHED2 pair drift)"
+            )
+            assert day_r["maintenance"] == day_s["maintenance"], (
+                f"simulate_days: maintenance-flag mismatch on {day_r['day']!r} (R-SCHED2 pair drift)"
+            )
+
+            ir_prime, dr_prime = Ref.update_filter(ids_r, day_r["insert"], day_r["delete"])
+            ids_r -= set(dr_prime)
+            ids_r |= set(ir_prime)
+
+            is_prime, ds_prime = Ref.update_filter(ids_s, day_s["insert"], day_s["delete"])
+            ids_s -= set(ds_prime)
+            ids_s |= set(is_prime)
+
+            if day_r["query"]:
+                counts.append(len(ids_r & ids_s))
+        return counts
+
+    @staticmethod
+    def detect_overflow(A: Iterable[int], B: Iterable[int], oracle, t_prime: int = 7,
+                         p: int = P) -> dict:
+        """W5.6's plaintext-only deep-scan overflow detector (SCOPE
+        DECISION, task-18-brief.md, no implementer discretion): the
+        depth-T'=7 detector needs syndromes to depth 2*T'-1=13 > K=7, which
+        the stored PowerSumTable rows cannot supply and an MPC deep-scan
+        circuit (mu(7)) is out of PoC scope -- this function is the ONLY
+        working implementation anywhere in this codebase; src/protocols/
+        salt.hpp's C++ OverflowChecker is a stub that always dies (SC4/FC2).
+
+        `oracle` is a CALLABLE id -> bucket (R-ORACLE-AGNOSTIC: this module
+        never ports BucketOracle/BLAKE3, so the Phase-6 planted-collision
+        demo passes a synthetic map instead of a real oracle). Buckets `A`
+        and `B` separately via `oracle`, then for every bucket touched by
+        EITHER side computes the signed syndrome vector d_1..d_{2*t_prime-1}
+        (Ref.syndromes's own power_sums(A-side) - power_sums(B-side)
+        convention) and its depth-t_prime generalized rank recovery
+        (_t_of_n: literally Ref.t_of/Ref.minors_det generalized from the
+        fixed depth 4 to an arbitrary depth n via the SAME Bareiss/Leibniz
+        machinery -- just a bigger Hankel matrix).
+
+        A bucket is flagged OVERFLOWING iff its recovered depth-t_prime
+        rank EXCEEDS T_CAP (= Params::T = 4): the real protocol's own
+        t_of() -- capped at depth 4 -- can never itself see past t=4, so
+        only a deeper (>= 2*t_prime-1 >= 13-term) scan can distinguish
+        "true multiplicity exactly 4" from "true multiplicity > 4, silently
+        misrecovered as (at most) 4 by the capped circuit". FC3 (t_prime=4,
+        i.e. no deep headroom beyond the real protocol's own depth) proves
+        this: _t_of_n is STRUCTURALLY bounded by its own depth argument (an
+        n x n Hankel test has only n leading principal minors), so
+        detect_overflow(..., t_prime=4) can never report a rank above 4 and
+        therefore can never flag anything -- not because of some
+        incidental implementation detail, but because the depth itself is
+        the only thing that makes detection possible.
+
+        Returns {"overflowing_buckets": [bucket, ...] (sorted), "detail":
+        {bucket: {"d": [...], "t_prime_rank": int}, ...}} -- `detail`
+        carries EVERY bucket actually touched (not just flagged ones) so a
+        caller can inspect borderline cases.
+        """
+        assert t_prime >= 1, "detect_overflow: t_prime must be >= 1"
+        depth = 2 * t_prime - 1
+        g = _generator(p)
+
+        bucket_a: dict[int, list[int]] = {}
+        for id_ in A:
+            bucket_a.setdefault(oracle(id_), []).append(id_)
+        bucket_b: dict[int, list[int]] = {}
+        for id_ in B:
+            bucket_b.setdefault(oracle(id_), []).append(id_)
+
+        overflowing: list[int] = []
+        detail: dict[int, dict] = {}
+        for beta in sorted(set(bucket_a) | set(bucket_b)):
+            ids_a = bucket_a.get(beta, [])
+            ids_b = bucket_b.get(beta, [])
+            d = Ref.syndromes(ids_a, ids_b, g, depth, p)
+            rank = _t_of_n(d, t_prime, p)
+            detail[beta] = {"d": d, "t_prime_rank": rank}
+            if rank > T_CAP:
+                overflowing.append(beta)
+
+        return {"overflowing_buckets": overflowing, "detail": detail}
+
 
 def _selftest_minors() -> None:
     """MIN-2 worked row (task-11-brief.md R-MIN; .handoff/sympsica-test-
@@ -1000,7 +1202,122 @@ def _selftest_minors() -> None:
         assert Ref.minors_det(ex["d"]) == ex["D"], f"MIN-3 minors_det self-check FAILED for t={t}"
 
 
+def _selftest_overflow() -> None:
+    """SC5/FC3 (task-18-brief.md W5.6): detect_overflow's planted
+    5-collision bucket is flagged at Tprime=7 with the exact recovered rank
+    5; the SAME bucket is NOT flagged at Tprime=4 (FC3: proves the depth,
+    not a side effect, is what detects); a post-refresh dispersal (a
+    disjoint synthetic oracle standing in for BucketOracle::refreshed --
+    R-ORACLE-AGNOSTIC, no BLAKE3 port exists here) clears it entirely
+    (salt-refresh transience, pre-building the Phase-6 demo); three random
+    small no-overflow sets (seeds 0..2) are NOT flagged. Runs
+    unconditionally on every import (same "module self-test" discipline
+    _selftest_minors() already establishes, R-MIN's own precedent).
+    """
+    planted_ids = [10_001, 10_002, 10_003, 10_004, 10_005]  # true multiplicity 5, all on the A side
+
+    def planted_oracle(id_: int) -> int:
+        return 777 if id_ in planted_ids else id_  # everything else maps to itself: no incidental collisions
+
+    res7 = Ref.detect_overflow(planted_ids, [], planted_oracle, t_prime=7)
+    assert 777 in res7["overflowing_buckets"], "SC5: planted 5-collision bucket must be flagged at Tprime=7"
+    assert res7["detail"][777]["t_prime_rank"] == 5, (
+        f"SC5: planted bucket's recovered depth-7 rank must be exactly 5, "
+        f"got {res7['detail'][777]['t_prime_rank']}"
+    )
+
+    # FC3: same planted bucket, Tprime=4 (no deep headroom) -> NOT flagged.
+    res4 = Ref.detect_overflow(planted_ids, [], planted_oracle, t_prime=4)
+    assert 777 not in res4["overflowing_buckets"], (
+        "FC3: Tprime=4 must NOT flag the planted 5-collision bucket -- detection needs depth "
+        "headroom beyond T=4, not some other side effect"
+    )
+    assert res4["detail"][777]["t_prime_rank"] <= 4, "FC3: a depth-4 Hankel test cannot report rank > 4"
+
+    # Salt-refresh transience: a disjoint synthetic oracle (standing in for
+    # BucketOracle::refreshed -- a fresh salt disperses ids to new buckets)
+    # scatters the same 5 planted ids across 5 distinct buckets (identity
+    # map: 5 distinct ids -> 5 distinct buckets); the detector must find NO
+    # overflowing bucket at all post-refresh.
+    def refreshed_oracle(id_: int) -> int:
+        return id_
+
+    res_refreshed = Ref.detect_overflow(planted_ids, [], refreshed_oracle, t_prime=7)
+    assert res_refreshed["overflowing_buckets"] == [], (
+        "SC5: post-refresh dispersal must clear the planted bucket entirely"
+    )
+
+    # Random no-overflow sets, seeds 0..2: small sets bucketed via a coarse
+    # (but real, non-degenerate) modulus oracle; the precondition (no
+    # bucket actually collects > T_CAP ids) is VERIFIED, not just assumed,
+    # before asserting detect_overflow agrees.
+    modulus = 997
+
+    def modulus_oracle(id_: int) -> int:
+        return id_ % modulus
+
+    for seed in range(3):
+        state = seed ^ 0x4F56464C  # 'OVFL'-ish salt, distinct from every other stream in this module
+        ids_a: list[int] = []
+        ids_b: list[int] = []
+        for _ in range(12):
+            state, r = splitmix64_next(state)
+            ids_a.append(200_000 + (r % 100_000))
+        for _ in range(12):
+            state, r = splitmix64_next(state)
+            ids_b.append(200_000 + (r % 100_000))
+
+        bucket_counts: dict[int, int] = {}
+        for id_ in ids_a + ids_b:
+            bucket_counts[modulus_oracle(id_)] = bucket_counts.get(modulus_oracle(id_), 0) + 1
+        assert max(bucket_counts.values()) <= T_CAP, (
+            f"_selftest_overflow precondition failed for seed={seed}: a bucket collected more than "
+            f"T_CAP={T_CAP} ids by chance -- adjust the modulus/sample size"
+        )
+
+        res = Ref.detect_overflow(ids_a, ids_b, modulus_oracle, t_prime=7)
+        assert res["overflowing_buckets"] == [], (
+            f"SC5: seed={seed} random no-overflow set must not be flagged, got "
+            f"{res['overflowing_buckets']}"
+        )
+
+
+def _selftest_simulate_days() -> None:
+    """SC6 support (task-18-brief.md R-ORACLE-AGNOSTIC): a tiny hand-built
+    schedule PAIR (3 days, 1 query day, disjoint insert ids so the true
+    intersection is known by construction) round-trips through
+    simulate_days() to the expected count. Also checks the R-SCHED2 pair-
+    drift assertion actually fires on a mismatched pair.
+    """
+    schedule_r = [
+        {"day": "2023-01-01", "insert": [1, 2, 3], "delete": [], "query": False, "maintenance": False},
+        {"day": "2023-01-02", "insert": [4], "delete": [], "query": True, "maintenance": False},
+        {"day": "2023-01-03", "insert": [], "delete": [1], "query": True, "maintenance": False},
+    ]
+    schedule_s = [
+        {"day": "2023-01-01", "insert": [2, 3, 5], "delete": [], "query": False, "maintenance": False},
+        {"day": "2023-01-02", "insert": [], "delete": [], "query": True, "maintenance": False},
+        {"day": "2023-01-03", "insert": [6], "delete": [], "query": True, "maintenance": False},
+    ]
+    # Day 1 (non-query): R={1,2,3}, S={2,3,5}.
+    # Day 2 (query): R={1,2,3,4}, S={2,3,5} -> intersection {2,3} = 2.
+    # Day 3 (query): R={2,3,4}, S={2,3,5,6} -> intersection {2,3} = 2.
+    counts = Ref.simulate_days(schedule_r, schedule_s)
+    assert counts == [2, 2], f"_selftest_simulate_days: expected [2, 2], got {counts}"
+
+    drifted_s = [dict(day) for day in schedule_s]
+    drifted_s[1] = dict(drifted_s[1], query=False)  # flip day 2's query flag -> pair drift
+    drifted = False
+    try:
+        Ref.simulate_days(schedule_r, drifted_s)
+    except AssertionError:
+        drifted = True
+    assert drifted, "_selftest_simulate_days: a query-flag pair mismatch must raise AssertionError"
+
+
 _selftest_minors()  # module self-test (R-MIN): always runs, aborts via AssertionError on failure
+_selftest_overflow()  # module self-test (task-18-brief.md SC5/FC3): always runs
+_selftest_simulate_days()  # module self-test (task-18-brief.md, R-ORACLE-AGNOSTIC): always runs
 
 
 def _cli(argv: list[str]) -> int:
