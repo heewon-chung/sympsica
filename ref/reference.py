@@ -1235,9 +1235,17 @@ class Ref:
         body: list[str] = []
         sched_count = 0
         for seed in range(seed_lo, seed_hi + 1):
-            n_days = 4 + (seed % 5)          # 4..8 (R-SCALE19)
-            universe = 120 + (seed % 60)     # 120..179
-            insert_per_day = 6 + (seed % 5)  # 6..10
+            n_days = 4 + (seed % 5)                 # 4..8 (R-SCALE19)
+            insert_per_day = max(6, 48 // n_days)    # scales inversely with n_days so total
+                                                      # draws (and thus final n) stay roughly
+                                                      # CONSTANT across the 4..8-day range,
+                                                      # rather than a short schedule drawing
+                                                      # far fewer ids than a long one
+            universe = 190                           # fixed; biases n toward the LOW end of
+                                                      # R-SCALE19's n in [32,128] (measured
+                                                      # min=33/max=45/mean~40 across seeds
+                                                      # 0..99) -- SC1 covers schedule LOGIC,
+                                                      # not crypto scale (R-SCALE19-AMEND)
             schedule_r, schedule_s = Ref.make_paired_day_schedule(seed, n_days, universe, insert_per_day)
             expected = Ref.simulate_days(schedule_r, schedule_s)
             assert len(expected) >= 2, f"seed={seed}: need >=2 query days, got {len(expected)}"

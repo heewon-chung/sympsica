@@ -1,26 +1,37 @@
 // test/protocols_heavy/kat_schedule100.cpp — Task 19's SC1 (task-19-brief.md
-// W5.8, R-SCALE19 SMALL scale): randomized day-schedules replayed
-// IN-PROCESS against a real two-party Channel, comparing every query day's
-// reconstructed count against ref/reference.py's Ref.simulate_days()
-// golden.
+// W5.8, R-SCALE19 SMALL scale): ALL 100 randomized day-schedules (seeds
+// 0..99, the plan's literal count -- W5.8 text and the phase SC line both
+// say "100 randomized schedules") replayed IN-PROCESS against a real
+// two-party Channel, comparing every query day's reconstructed count
+// against ref/reference.py's Ref.simulate_days() golden.
 //
-// R-SCALE19 (binding): "n in [32,128] ids per party, 4-8 days each, >= 2
-// query days ... In-process two-thread execution is ACCEPTABLE and
-// preferred here ... Whole 100-seed sweep must fit in ~180s Release ... If
-// a leg cannot fit its budget, REDUCE THE COUNT (fewer seeds), never the
-// assertion strength, and say exactly what you reduced and why."
+// R-SCALE19-AMEND (controller ruling, binding, supersedes an earlier draft
+// of this file that reduced the sweep to 35 seeds): the "~180s Release"
+// figure in the original brief was a controller-side CONVENIENCE estimate,
+// not a requirement -- the 100-seed count itself is SPEC-SIDE (plan W5.8 +
+// the phase SC line) and must not be traded away to protect an invented
+// budget number. This test therefore runs the FULL 100 seeds behind the
+// "heavy" ctest LABEL with a TIMEOUT sized for it (see CMakeLists.txt);
+// the label is exactly what keeps the default/fast developer loop
+// unaffected by this leg's real cost.
 //
-// COVERAGE REDUCTION (documented per R-SCALE19's own requirement): the
-// fixture below carries seeds 0..34 (35 schedules), NOT the plan's literal
-// 100. Empirically measured (task-19-report.md has the full calibration
-// log): after a one-time ~11s Setup::run cost, each schedule at this scale
-// costs ~4.3s steady-state (dominated by per-query-day refill_offline/
-// gate-generation round trips, not by the raw triple/gate count itself,
-// which is tiny at n in [32,128]) -- 100 schedules would cost ~440s, well
-// over the ~180s Release budget; 35 schedules costs ~155-160s, comfortably
-// inside it. The assertion strength is UNCHANGED (35/35 must still match
-// reference.py exactly at every query day); only the seed COUNT was
-// reduced, per R-SCALE19's explicit permission.
+// Measured cost breakdown (task-19-report.md has the full investigation):
+// a controlled experiment (10x larger upfront pool + a much lower
+// refill_offline top-up target, to test whether per-query-day pool
+// provisioning dominated the per-schedule cost) made NO measurable
+// difference to total runtime -- confirming the cost is dominated by the
+// real MPC evaluation itself (eval_union's Beaver-triple/ZtGate rounds,
+// proportional to each query's union bucket count), which is irreducible
+// work, not incidental overhead. What DOES reduce cost proportionally is
+// party scale: the schedule generator (Ref.emit_sched100_fixture) was
+// retuned to sit at the LOW end of R-SCALE19's own "n in [32,128] ids per
+// party" range (measured n: min 33 / max 45 / mean ~40 across seeds
+// 0..99) -- SC1 exists to cover SCHEDULE LOGIC (filter, J marking, path
+// selection, count correctness), not crypto scale, so there is no reason
+// to pay for n toward the top of that range here.
+//
+// Measured runtime (task-19-report.md): 436.2s for all 100 seeds --
+// comfortably inside the "heavy" TIMEOUT below (~3.4x margin).
 //
 // At this scale nA+nB never approaches 2*Params::U_MAX, so SwitchRule::
 // decide always takes the FullPublic/FullAnnounced branch (never
@@ -143,17 +154,17 @@ std::vector<SchedCase> load_sched100(const std::string& path) {
 // across up to 8 days means a query-day union is comfortably under a few
 // hundred buckets; 400 buckets' worth of margin covers every SC1 case with
 // room to spare while staying far below Incremental's fixed 2*u_max cost.
-constexpr u64 kQueryTopUpBuckets = 400;
+constexpr u64 kQueryTopUpBuckets = 150;
 
 } // namespace
 
-TEST(Schedule100, SC1_ThirtyFiveRandomSchedulesMatchReferencePy) {
+TEST(Schedule100, SC1_HundredRandomSchedulesMatchReferencePy) {
     const auto t_start = std::chrono::steady_clock::now();
 
     std::vector<SchedCase> cases =
         load_sched100(sympsica_test::fixture_path("test/fixtures/sched100.fixture"));
-    ASSERT_EQ(cases.size(), 35u) << "SC1 fixture must carry the reduced 35-seed sweep (0..34) -- "
-                                     "see this file's top comment for the R-SCALE19 justification";
+    ASSERT_EQ(cases.size(), 100u) << "SC1 fixture must carry all 100 seeds (0..99), the plan's "
+                                      "own literal count (R-SCALE19-AMEND)";
 
     Params params_r = Params::instantiate();
     Params params_s = Params::instantiate();
@@ -163,8 +174,8 @@ TEST(Schedule100, SC1_ThirtyFiveRandomSchedulesMatchReferencePy) {
     Pools pool_r, pool_s;
     run_two_party(
         "127.0.0.1:49900",
-        [&](Channel& ch) { pool_r = Setup::run(Role::Receiver, ch, params_r, PoolSizes{20000, 2000}); },
-        [&](Channel& ch) { pool_s = Setup::run(Role::Sender, ch, params_s, PoolSizes{20000, 2000}); });
+        [&](Channel& ch) { pool_r = Setup::run(Role::Receiver, ch, params_r, PoolSizes{40000, 4000}); },
+        [&](Channel& ch) { pool_s = Setup::run(Role::Sender, ch, params_s, PoolSizes{40000, 4000}); });
 
     std::vector<std::vector<u64>> observed_r(cases.size()), observed_s(cases.size());
 

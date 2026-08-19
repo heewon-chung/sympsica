@@ -318,13 +318,14 @@ function(sympsica_add_test_target _dir_name _test_prefix)
         # explicit TIMEOUT ~3x its measured runtime. gtest_discover_tests'
         # PROPERTIES apply per-TARGET (every test discovered from ONE
         # add_executable), which is exactly why these three genuinely-heavy
-        # files (kat_schedule100.cpp ~155-160s, kat_tvf12_schedule.cpp
-        # ~142s, kat_clmb.cpp ~1.4s but plan-mandated to carry the label
-        # regardless) live in their OWN directory/target rather than mixed
-        # into test/protocols/ alongside every sub-second KAT there.
-        # TIMEOUT 600s covers ~3x the slowest measured leg (kat_schedule100,
-        # ~160s) with margin; see task-19-report.md's measured-runtime table.
-        set(_extra_test_properties PROPERTIES LABELS "heavy" TIMEOUT 600)
+        # files (kat_schedule100.cpp: ALL 100 seeds per R-SCALE19-AMEND,
+        # measured 436.2s; kat_tvf12_schedule.cpp ~144s; kat_clmb.cpp ~1.4s
+        # but plan-mandated to carry the label regardless) live in their OWN
+        # directory/target rather than mixed into test/protocols/ alongside
+        # every sub-second KAT there. TIMEOUT 1500s is ~3.4x the slowest
+        # measured leg (kat_schedule100, 436.2s) with margin; see
+        # task-19-report.md's measured-runtime table.
+        set(_extra_test_properties PROPERTIES LABELS "heavy" TIMEOUT 1500)
     endif()
     gtest_discover_tests(${_target} TEST_PREFIX "${_test_prefix}." ${_extra_test_properties})
 endfunction()

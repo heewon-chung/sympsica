@@ -198,17 +198,19 @@ day-schedule-pair generator, W5.7 per-party day format) + `Ref.simulate_days()`
 (expected per-query-day count replay). Regenerate with:
 
 ```
-python3 ref/reference.py emit-sched100 --seed-lo 0 --seed-hi 34 --out test/fixtures/sched100.fixture
+python3 ref/reference.py emit-sched100 --seed-lo 0 --seed-hi 99 --out test/fixtures/sched100.fixture
 ```
 
-**Coverage reduction (documented, R-SCALE19):** the plan's literal "100
-randomized schedules" is reduced to **35** (seeds 0..34) here -- measured
-runtime at the full 100 would be ~440s (steady-state ~4.3s/schedule after a
-~11s one-time `Setup::run`), over the ~180s Release budget; 35 schedules
-measures ~161-171s (both via `ctest` and standalone). The assertion strength is unchanged: every schedule in
-the fixture must still match `reference.py` exactly at every query day (see
-`test/protocols_heavy/kat_schedule100.cpp`'s own top comment for the full
-calibration numbers).
+**All 100 seeds (0..99), per R-SCALE19-AMEND:** the plan's literal "100
+randomized schedules" is NOT reduced -- an earlier draft of this task
+shipped a 35-seed reduction to fit a "~180s Release" figure, but that
+figure was a controller-side convenience estimate, not a requirement; the
+100-seed count itself is spec-side (plan W5.8 text + the phase SC line)
+and stays as-is behind the `heavy` ctest LABEL/TIMEOUT, which is exactly
+what that label exists for. Measured runtime: 436.2s for all 100 seeds. See
+`test/protocols_heavy/kat_schedule100.cpp`'s own top comment for the
+(negative) provisioning-overhead investigation and (positive) n-scale
+retuning that went into that final cost.
 
 Ids are stored CONCRETE (same convention as every other fixture in this
 directory), so the C++ side never needs to replicate this file's PRNG
