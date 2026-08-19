@@ -370,9 +370,27 @@ SwitchRule::Path SwitchRule::decide(const Params& pp, u64 nA, u64 nB, u64 myJ, b
     if (firstQuery || 2 * Params::U_MAX >= std::min(nA, Params::M) + std::min(nB, Params::M)) {
         return Path::FullPublic;
     }
+#ifdef SYMPSICA_WRONG_BOUNDARY
+    // FC4 [TV-F12 negative] (task-19-brief.md R-FCFLAGS / controller ruling
+    // R-FC4-REAL): TEST-ONLY wrong construction -- the boundary comparison
+    // is relaxed from strict `>` to `>=`, so a query with |J| == u_max
+    // EXACTLY wrongly announces (SC4's own real Query::run schedule drives
+    // |J| to exactly 1024, expecting Incremental/no-announce; under this
+    // flag it wrongly takes FullAnnounced instead). NEVER defined in the
+    // default build (CMake option SYMPSICA_WRONG_BOUNDARY defaults OFF,
+    // same precedent as the other three R-FCFLAGS flags); exists only so a
+    // separately-configured build dir can demonstrate FC4's boundary
+    // assertions failing against a REAL wrong construction, not a
+    // standalone comparison of two lambdas (the tautology the controller's
+    // review caught in an earlier draft of this file).
+    if (myJ >= Params::U_MAX || counterpartAnnounced) {
+        return Path::FullAnnounced;
+    }
+#else
     if (myJ > Params::U_MAX || counterpartAnnounced) {
         return Path::FullAnnounced;
     }
+#endif
     return Path::Incremental;
 }
 

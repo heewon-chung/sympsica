@@ -157,6 +157,7 @@ option(SYMPSICA_NO_FILTER "TEST-ONLY: disable Update::apply's step-1 filter (TV-
 option(SYMPSICA_WRONG_SIGN "TEST-ONLY: Sender uses +row instead of -row (FC1/TV-F8 negative build)" OFF)
 option(SYMPSICA_WRONG_CONVERT "TEST-ONLY: receiver-form convert() applied on both roles (FC2/TV-F9 negative build)" OFF)
 option(SYMPSICA_STALE_SIZES "TEST-ONLY: round-0's exchanged counterpart size is discarded (FC5 negative build)" OFF)
+option(SYMPSICA_WRONG_BOUNDARY "TEST-ONLY: SwitchRule::decide's boundary relaxed to >= (FC4/TV-F12 negative build, R-FC4-REAL)" OFF)
 
 option(SYMPSICA_BUILD_LIBOTE "Build vendored libOTe as a real CMake dependency" ON)
 if(SYMPSICA_BUILD_LIBOTE)
@@ -213,6 +214,9 @@ if(SYMPSICA_WRONG_CONVERT)
 endif()
 if(SYMPSICA_STALE_SIZES)
     target_compile_definitions(sympsica PRIVATE SYMPSICA_STALE_SIZES)
+endif()
+if(SYMPSICA_WRONG_BOUNDARY)
+    target_compile_definitions(sympsica PRIVATE SYMPSICA_WRONG_BOUNDARY)
 endif()
 if(SYMPSICA_BUILD_LIBOTE)
     # `libOTe` is the actual target name add_subdirectory() defines (see

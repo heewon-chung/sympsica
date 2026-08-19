@@ -25,11 +25,23 @@
 // real, cheap FullPublic query (pays for nothing extra); the SAME real,
 // unmodified Query::run call under test (q2 at |J|=1024, ~2*u_max-scale
 // Incremental cost; q3 at |J|=1025, ~1025-bucket FullAnnounced cost,
-// cheaper) is run exactly once each -- FC4 is then a ZERO-EXTRA-MPC-COST
-// corollary: it reuses q2/q3's own REAL, already-paid-for |J| values and
-// shows that a test-local `>=` (rather than the production's strict `>`)
-// boundary rule disagrees with SwitchRule::decide's actual (correct)
-// verdict at exactly these two real, schedule-constructed sizes.
+// cheaper) is run exactly once each.
+//
+// FC4 [TV-F12 negative] (controller ruling R-FC4-REAL): NOT a standalone
+// comparison of two local lambdas evaluated against fixed numbers (an
+// earlier draft did that; the controller's review correctly flagged it as
+// a tautology -- true by construction, never touching the real
+// SwitchRule::decide(), never observed failing against a real wrong
+// construction). FC4 is instead the SAME TEST_() above, run a second time
+// against a build compiled with -DSYMPSICA_WRONG_BOUNDARY=ON
+// (build-wrongboundary/, R-FCFLAGS precedent: SwitchRule::decide's `myJ >
+// Params::U_MAX` relaxed to `myJ >= Params::U_MAX`, src/protocols/
+// query.cpp) -- under that build, the two parties' path selections
+// DESYNC at q2's boundary and the wire-format mismatch aborts both
+// processes (ctest reports "Subprocess aborted", 0/1 passed, ~36s -- an
+// even stronger negative than a graceful EXPECT_EQ mismatch would have
+// been). See this file's own FC4 comment further down (right after q3)
+// and task-19-report.md for the exact reproduce command and transcript.
 //
 // Measured runtime (task-19-report.md): ~142s (q2's Incremental leg alone
 // ~57s, q3's FullAnnounced leg ~85s over ~3075 buckets). TIMEOUT below is
@@ -257,11 +269,17 @@ TEST(TVF12Schedule, SC4_And_FC4_ScheduleLevelBoundaryAt1024And1025) {
         << "test precondition: q2 must clear SwitchRule's FullPublic size condition";
 
     // q2: |J_sender| == u_max exactly -> Incremental on BOTH sides, no
-    // announce (SC4 positive boundary).
+    // announce (SC4 positive boundary). Pool sized to cover BOTH the
+    // correct Incremental path's fixed 2*u_max union AND the (larger,
+    // st_r.my_size+st_s.my_size) full-path union a wrong `>=` boundary
+    // build (FC4/R-FC4-REAL, build-wrongboundary/) would take instead --
+    // so that build's own run reaches a clean EXPECT_EQ mismatch below
+    // rather than a pool-exhaustion abort.
     std::cerr << "[TVF12] starting q2 (incremental, ~2*u_max buckets)\n";
     SwitchRule::Path taken_r_1024{}, taken_s_1024{};
     {
-        auto pools = build_pools(44 * (2 * Params::U_MAX), 4 * (2 * Params::U_MAX), 0x54120001ull);
+        const u64 q2_pool_buckets = std::max<u64>(2 * Params::U_MAX, st_r.my_size + st_s.my_size);
+        auto pools = build_pools(44 * q2_pool_buckets, 4 * q2_pool_buckets, 0x54120001ull);
         run_two_party(
             next_address(),
             [&](Channel& ch) {
@@ -321,22 +339,39 @@ TEST(TVF12Schedule, SC4_And_FC4_ScheduleLevelBoundaryAt1024And1025) {
     EXPECT_EQ(taken_s_1025, SwitchRule::Path::FullAnnounced)
         << "SC4: |J_sender|==u_max+1 -- the sender's OWN myJ>u_max branch fires directly";
 
-    // --- FC4 [TV-F12 negative]: a wrong `>=` boundary rule, evaluated at
-    // the SAME two real |J| values q2/q3 just constructed, disagrees with
-    // SwitchRule::decide's actual (correct, strict `>`) verdict -- zero
-    // extra MPC cost.
-    const u64 boundary_j = Params::U_MAX;          // the real |J| q2 constructed (SC4 positive)
-    const u64 over_boundary_j = Params::U_MAX + 1; // the real |J| q3 constructed (SC4 negative)
-    auto correct_rule = [](u64 myJ) { return myJ > Params::U_MAX; };      // production's own rule
-    auto wrong_ge_rule = [](u64 myJ) { return myJ >= Params::U_MAX; };    // WRONG: announces AT the boundary
-    auto wrong_gt1_rule = [](u64 myJ) { return myJ > Params::U_MAX + 1; }; // WRONG: omits AT u_max+1
-
-    EXPECT_NE(wrong_ge_rule(boundary_j), correct_rule(boundary_j))
-        << "FC4: a >= u_max boundary rule wrongly announces AT the boundary (|J|==1024), which "
-           "SC4 just proved the real protocol (correctly) does not";
-    EXPECT_NE(wrong_gt1_rule(over_boundary_j), correct_rule(over_boundary_j))
-        << "FC4: a > u_max+1 (off-by-one-too-strict) rule wrongly OMITS the announce at "
-           "|J|==1025, which SC4 just proved the real protocol (correctly) does not";
+    // FC4 [TV-F12 negative] (controller ruling R-FC4-REAL): NOT
+    // demonstrated here as a standalone comparison of two local lambdas
+    // (an earlier draft of this file did that, and the controller's
+    // review correctly flagged it as a tautology -- true by construction,
+    // never touching the real SwitchRule::decide(), no observed failure
+    // against a real wrong construction). FC4 is instead demonstrated by
+    // running THIS SAME TEST_() against a build compiled with
+    // -DSYMPSICA_WRONG_BOUNDARY=ON (build-wrongboundary/, R-FCFLAGS
+    // precedent: a second build dir, SwitchRule::decide's `myJ >
+    // Params::U_MAX` relaxed to `myJ >= Params::U_MAX` -- see
+    // src/protocols/query.cpp's own #ifdef site).
+    //
+    // OBSERVED FAILURE MODE (measured, not the graceful EXPECT_EQ mismatch
+    // an earlier draft of this comment predicted): decide()'s own internal
+    // `myJ` check is evaluated PER-PARTY on that party's own st.J.size()
+    // (query.cpp), independent of the wire announce bit (`my_announce`,
+    // computed separately and NOT touched by this flag). At q2's exact
+    // boundary (sender's own |J| == u_max), the relaxed `>=` flips ONLY
+    // the SENDER's own decide() verdict to FullAnnounced while the
+    // RECEIVER's wire-received announce bit (still computed with the
+    // correct, untouched strict `>`) stays 0 -- so the receiver still
+    // computes Incremental. The two parties' path selections DISAGREE
+    // (full-path supports exchange vs fixed-size J~ exchange), and the
+    // resulting wire-format mismatch aborts BOTH processes via
+    // `SYMPSICA_REQUIRE` inside `read_u64_vec` ("length prefix exceeds
+    // buffer") before either side ever reaches the EXPECT_EQ assertions
+    // above. `ctest --test-dir build-wrongboundary -R TVF12Schedule`
+    // reports this as "Subprocess aborted" -- 0/1 tests passed -- in
+    // ~36s (task-19-report.md has the full transcript). This is an
+    // EVEN STRONGER negative demonstration than a graceful mismatch would
+    // have been (same "hard abort IS observed failing" precedent as FC5's
+    // stale-sizes build): it shows the wrong boundary doesn't just pick a
+    // different-but-survivable path, it desyncs the two parties entirely.
 
     clear_path(path_r);
     clear_path(path_s);

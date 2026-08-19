@@ -218,8 +218,8 @@ stream.
 
 | key | values | meaning |
 |---|---|---|
-| `seed_lo` / `seed_hi` | `0` / `34` | the seed range this file covers |
-| `sched_count` | `35` | number of `sched` rows |
+| `seed_lo` / `seed_hi` | `0` / `99` | the seed range this file covers |
+| `sched_count` | `100` | number of `sched` rows |
 | `sched` | `<seed> <n_days> <n_queries>` | one schedule's shape |
 | `day` | `<seed> <day_label> <query 0/1> <ins_r_count> <ins_r...> <del_r_count> <del_r...> <ins_s_count> <ins_s...> <del_s_count> <del_s...>` | one day of one schedule's PAIR (both parties' insert/delete lists for that day) |
 | `expected` | `<seed> <count...>` | `Ref.simulate_days()`'s golden per-query-day count sequence for that seed, in day order |
