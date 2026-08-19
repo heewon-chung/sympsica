@@ -483,3 +483,19 @@ if(TARGET crash_probe)
                 --timeout-s 60)
     set_tests_properties(e2e.CrashMatrixFivePoint PROPERTIES LABELS "heavy" TIMEOUT 180)
 endif()
+
+# ---------------------------------------------------------------------------
+# task-21-brief.md W6.3 (SC4/SC5, R6-OVFDEMO/R6-OVFSCOPE): the planted-
+# overflow demo. detect_overflow is PYTHON-ONLY (no C++ port exists -- R-ORACLE-
+# AGNOSTIC, task-18-brief.md), so there is no production C++ call site to
+# exercise from a gtest binary; test/overflow/gen_overflow_demo.py IS the
+# test (loads the committed fixture, recomputes fresh via reference.py,
+# asserts SC4/FC3/FC4, then regenerates docs/overflow_demo.md) -- same
+# native-add_test-running-python3 idiom as the E2E drivers and the R-GREP
+# guard above, for the same reason (a Python-only check with nothing to
+# gtest_discover_tests). Named with an "overflow." prefix (not tied to any
+# existing sympsica_add_test_target directory) so `-R 'overflow|Overflow'`
+# matches unambiguously without incidentally widening any other selector.
+# ---------------------------------------------------------------------------
+add_test(NAME overflow.PlantedFiveIdsFlagAtT7AndClearAfterRefresh
+    COMMAND python3 "${CMAKE_SOURCE_DIR}/test/overflow/gen_overflow_demo.py")

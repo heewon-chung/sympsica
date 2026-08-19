@@ -1,0 +1,13 @@
+# sympsica W6.3 planted-overflow fixture (generated) - format v1
+# generator: python3 ref/reference.py emit-ovf --out test/fixtures/overflow_planted.fixture
+format 1
+ovf_bucket 777
+ovf_planted_ids_count 5
+ovf_planted_ids 10001 10002 10003 10004 10005
+ovf_pre_d 646364557242356487 1937558631415186103 780889260909932386 997745954457173898 670750315835778520 412896386929052568 741051222477068828 517789724850478991 809741256326956965 922114123835497334 582166299015236210 2121001166991829848 142251759868216111
+ovf_pre_rank 5
+ovf_pre_flagged 1
+ovf_t4_rank 4
+ovf_t4_flagged 0
+ovf_post_flagged_any 0
+ovf_post_bucket_present 0

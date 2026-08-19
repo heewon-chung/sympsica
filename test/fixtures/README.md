@@ -232,6 +232,108 @@ public-domain splitmix64 generator (Sebastiano Vigna) with identical mixing
 constants, so a `(prng_seed, count)` pair regenerates byte-identical
 sequences in either language without shipping the raw samples.
 
+## `golden_seed0.fixture` .. `golden_seed9.fixture` (task-21-brief.md W6.2, R6-GOLDCONTENT)
+
+Golden source: `ref/reference.py`'s `Ref.make_golden_pair()` (two `nR = nS =
+2^10` concrete id sets, R/S per R-SYND's own Receiver/Sender convention) +
+`Ref.emit_golden_fixture()` (per-symmetric-difference-id syndrome/rank via
+`Ref.syndromes()`/`Ref.t_of()`, self-checked against a direct plaintext
+intersection before writing). Regenerate with:
+
+```
+python3 ref/reference.py emit-golden --seed <N> --out test/fixtures/golden_seed<N>.fixture
+```
+
+`golden_seed0.fixture` .. `golden_seed9.fixture` were generated with exactly
+that command for `N` in `0..9` (task-21-brief.md W6.2: "seeds 0..9,
+n = 2^10"). **NOT the same family as `seed0.fixture` .. `seed9.fixture`
+above** (R6-GOLDNAME, binding) -- those are Phase-1 field/encoding KAT
+inputs with a completely different meaning; the two families happen to
+share the `0..9` seed range only by convention.
+
+R6-GOLDCONTENT rationale: a golden pinning only the final count would be too
+weak to be Phase 6's positive evidence (a wrong per-bucket computation that
+happens to sum correctly would still pass) -- so this fixture pins, per
+seed: the two full id sets, EVERY symmetric-difference id's per-bucket
+signed syndrome vector and recovered rank, the aggregate rank, AND the
+derived count, cross-checked against a direct plaintext intersection inside
+the generator itself.
+
+There is no real bucket LABEL stored in the file: `ref/reference.py` never
+ports `BucketOracle`/BLAKE3 (R-ORACLE-AGNOSTIC, task-18-brief.md), so each
+symmetric-difference id is treated as occupying its own "virtual bucket"
+keyed by the id itself. `test/protocols/kat_golden_cheap.cpp` (the C++
+consumer) is what ties this back to the REAL `Params` oracle: it explicitly
+checks, per seed, that the real `BucketOracle::of()` is injective over every
+id in `ids_r U ids_s` (a genuine, falsifiable precondition -- see that
+file's own top comment for why this is sound rather than an unverified
+assumption at `M = 2^31` buckets / ~2000 ids).
+
+| key | values | meaning |
+|---|---|---|
+| `seed` | `N` | the `--seed` this file was generated with |
+| `generator_g` | `37` | the canonical generator (same cross-check as every other family) |
+| `golden_overlap` | `<k>` | `\|ids_r ∩ ids_s\|` by construction (varies per seed, `37 + 41*(seed % 10)`) |
+| `golden_nR` / `golden_ids_r` | `1024` / `<1024 ids>` | the Receiver-role id set, CONCRETE |
+| `golden_nS` / `golden_ids_s` | `1024` / `<1024 ids>` | the Sender-role id set, CONCRETE |
+| `golden_bucket_count` | `<K>` | number of `golden_bucket` rows (= `\|ids_r Δ ids_s\|`) |
+| `golden_bucket` | `<id> <sign 0/1> <d1..d7> <t_beta>` | one symmetric-difference id: `sign` 0 = R-only (+, this id's real bucket gets `+table.row`), 1 = S-only (-); `d1..d7` = `Ref.syndromes` (R-minus-S convention, matching `query.cpp`'s `build_syndrome`); `t_beta` = `Ref.t_of(d)`, always `1` for a lone id (MIN-1's rank-1 identity) |
+| `golden_t` | `<t>` | aggregate rank, `sum(t_beta)` over every `golden_bucket` row |
+| `golden_count` | `<n>` | `(golden_nR + golden_nS - golden_t) / 2`, cross-checked in the generator against `len(set(ids_r) & set(ids_s))` before writing |
+
+**Two-layer C++ consumption (R6-GOLDDEPTH):** all 10 seeds run through a
+CHEAP layer (`test/protocols/kat_golden_cheap.cpp`: real `core/table` +
+`protocols/update` table construction, real `gates/minors.hpp`
+`MinorCircuit` rank recovery over DEALER-style test triples -- no OT/
+Setup-produced pools, no full `Query::run` dispatch; measured runtime for
+all 10 seeds: see task-21-report.md). ONE seed (9, the largest configured
+overlap, i.e. the smallest union-bucket count among the 10) additionally
+runs through a FULL layer (`test/protocols_heavy/kat_golden_full.cpp`,
+`heavy` label): the real two-party `Query::run` over a real TCP `Channel`,
+with `Setup`-produced (OT/silent-VOLE) pools, asserting the opened count
+equals `golden_count`.
+
+## `overflow_planted.fixture` (task-21-brief.md W6.3, R6-OVFDEMO)
+
+Golden source: `ref/reference.py`'s `Ref.build_overflow_demo_data()` -- the
+SAME planted-5-ids-in-one-bucket construction `_selftest_overflow()`
+(task-18-brief.md SC5/FC3) already proves at import time, factored out so
+both share one definition instead of two hand-maintained copies. Regenerate
+with:
+
+```
+python3 ref/reference.py emit-ovf --out test/fixtures/overflow_planted.fixture
+```
+
+**SCOPE (R6-OVFSCOPE, binding):** this fixture and everything that consumes
+it are PLAINTEXT/REFERENCE-ONLY. No MPC overflow detector exists anywhere
+in this codebase; `src/protocols/salt.cpp`'s `OverflowChecker::check` is a
+`[[noreturn]]` stub that always aborts. `Ref.detect_overflow` is the ONLY
+working implementation of the deep-scan overflow check anywhere in this
+codebase (task-18-brief.md W5.6 scope decision).
+
+| key | values | meaning |
+|---|---|---|
+| `ovf_bucket` | `777` | the synthetic bucket 5 ids are planted into |
+| `ovf_planted_ids_count` / `ovf_planted_ids` | `5` / `<5 ids>` | the planted ids (true multiplicity 5) |
+| `ovf_pre_d` | `<d1..d13>` | the depth-`2*7-1=13` syndrome vector at the planted bucket, pre-refresh |
+| `ovf_pre_rank` | `5` | `Ref.detect_overflow(..., t_prime=7)`'s recovered rank at the planted bucket |
+| `ovf_pre_flagged` | `1` | whether the planted bucket is in `overflowing_buckets` at `t_prime=7` (SC4) |
+| `ovf_t4_rank` | `<=4` | recovered rank at `t_prime=4` (FC3: a depth-7 Hankel test cannot report a rank above 4) |
+| `ovf_t4_flagged` | `0` | whether flagged at `t_prime=4` -- must be `0` (FC3: no deep headroom, no detection) |
+| `ovf_post_flagged_any` | `0` | whether ANY bucket is flagged after a salt-refresh dispersal (FC4) |
+| `ovf_post_bucket_present` | `0` | whether the planted bucket (777) still appears in the post-refresh detail at all (it does not: the refreshed oracle disperses the 5 ids to 5 distinct buckets) |
+
+**Consumer (SC4/SC5):** `test/overflow/gen_overflow_demo.py`, registered
+directly via `add_test` (ctest name
+`overflow.PlantedFiveIdsFlagAtT7AndClearAfterRefresh`) since
+`detect_overflow` has no C++ production call site to exercise from a gtest
+binary. It loads this fixture, recomputes fresh via
+`Ref.build_overflow_demo_data()` (catching numeric drift), asserts SC4/FC3/
+FC4 directly, and on success (re)generates `docs/overflow_demo.md` -- see
+that script's own top comment and `docs/overflow_demo.md`'s own opening
+disclaimer paragraph for the full R6-OVFSCOPE statement.
+
 ## `generator_g.txt` (ENC-5, `[POST-GATE]`)
 
 Separate from the per-seed fixtures: a single line, `37`, pinning the

@@ -1326,6 +1326,212 @@ class Ref:
         with open(out_s, "w") as f:
             json.dump(schedule_s, f)
 
+    # -------------------------------------------------------------------
+    # Cut 5 (task-21-brief.md W6.2/W6.3, ADDITIVE -- cuts 1-4 above are
+    # byte-identical to before this cut). Seed-fixed n=2^10 goldens
+    # (R6-GOLDCONTENT) and the planted-overflow demo fixture (R6-OVFDEMO).
+    # -------------------------------------------------------------------
+
+    @staticmethod
+    def make_golden_pair(seed: int, n: int = 1024) -> tuple[list[int], list[int], int]:
+        """Builds nR = nS = `n` concrete id sets for the W6.2 seed-fixed
+        golden (R6-GOLDCONTENT part 1): two CONSECUTIVE `n`-length integer
+        ranges, offset per seed (own universe -- no cross-seed accidental
+        overlap) and shifted against each other by exactly `overlap` ids,
+        so |R intersect S| == overlap EXACTLY, by construction (same
+        "concrete consecutive ranges" idiom Ref.make_e2e_schedule_pair
+        already uses for r_base/s_base). `overlap` varies with `seed`
+        (37 + 41*(seed % 10), i.e. 37..406 for seed in 0..9, always < n)
+        purely for golden diversity across the 10 committed seeds -- not
+        spec-mandated.
+
+        Naming: R/S (not A/B), matching R-SYND's own Receiver/Sender
+        convention (query.cpp: "+table.row(beta) if Receiver, -table.row
+        (beta)... if Sender") -- the golden's per-bucket syndrome sign
+        below is built the SAME way, so R/S here is deliberately the same
+        two letters as `Ref.simulate_days`'s schedule_r/schedule_s.
+        """
+        assert n <= 1_000_000, "make_golden_pair: n too large for this offset scheme"
+        off = seed * 10_000_000
+        overlap = 37 + 41 * (seed % 10)
+        assert 0 < overlap < n, f"make_golden_pair: overlap={overlap} must be in (0, {n})"
+        ids_r = list(range(1 + off, 1 + off + n))
+        ids_s = list(range(1 + off + n - overlap, 1 + off + 2 * n - overlap))
+        assert len(ids_r) == n and len(ids_s) == n
+        assert len(set(ids_r) & set(ids_s)) == overlap, (
+            "make_golden_pair: constructed overlap does not match the requested value "
+            "(internal bug in the range arithmetic)"
+        )
+        return ids_r, ids_s, overlap
+
+    @staticmethod
+    def emit_golden_fixture(seed: int, out_path: str, n: int = 1024) -> None:
+        """Emits ONE W6.2 golden (task-21-brief.md SC1/R6-GOLDCONTENT):
+        the two id sets, PLUS, for every id in the symmetric difference
+        R ^ S (an id present in exactly one of R/S), the per-id signed
+        syndrome vector d_1..d_7 (Ref.syndromes, the SAME R-minus-S
+        convention query.cpp's build_syndrome implements) and its
+        recovered rank t_beta (Ref.t_of, the SAME max-rule Remark 1/TV-F7
+        pins) -- treating each symmetric-difference id as occupying its
+        OWN virtual bucket (R-ORACLE-AGNOSTIC: this module never ports
+        BucketOracle/BLAKE3, so it cannot predict real hash-bucket labels;
+        see test/fixtures/README.md's golden-fixture section and the C++
+        consumer's own injectivity precondition check for how this
+        virtual-bucket-per-id convention is tied back to the REAL Params
+        oracle at consumption time). An id present in BOTH R and S
+        contributes a net-zero syndrome at whatever real bucket it maps
+        to (same id -> same bucket, deterministically) and is therefore
+        NOT emitted as an "occupied bucket of the symmetric difference"
+        (R6-GOLDCONTENT part 2's own phrasing) -- part 4's cross-check
+        below is what actually pins the intersection's SIZE.
+
+        Self-checks (before writing anything, same discipline
+        emit_e2e_schedule_pair already uses): every symmetric-difference
+        id's recovered rank is exactly 1 (Ref.minors_det cross-checked
+        inside Ref.t_of's own call chain is NOT re-invoked here directly,
+        but MIN-3/MIN-4's existing coverage already pins Ref.minors/
+        Ref.t_of against Ref.minors_det -- see test/fixtures/README.md);
+        the derived count (nR + nS - t) / 2 EXACTLY equals a direct
+        plaintext `len(set(ids_r) & set(ids_s))` (R6-GOLDCONTENT part 4).
+        """
+        g = _generator()
+        depth = 7  # Params::K
+        ids_r, ids_s, overlap = Ref.make_golden_pair(seed, n)
+        set_r, set_s = set(ids_r), set(ids_s)
+        sym_diff_r = sorted(set_r - set_s)  # R-only ids (sign '+' at their own bucket)
+        sym_diff_s = sorted(set_s - set_r)  # S-only ids (sign '-' at their own bucket)
+
+        buckets: list[tuple[int, int, list[int], int]] = []  # (id, sign, d, t_beta)
+        agg_t = 0
+        for id_ in sym_diff_r:
+            d = Ref.syndromes([id_], [], g, depth)
+            t_beta = Ref.t_of(d)
+            assert t_beta == 1, (
+                f"emit_golden_fixture: seed={seed} R-only id {id_} must recover t_beta==1 "
+                f"(single-id syndrome, rank-1 identity, MIN-1), got {t_beta}"
+            )
+            buckets.append((id_, 0, d, t_beta))
+            agg_t += t_beta
+        for id_ in sym_diff_s:
+            d = Ref.syndromes([], [id_], g, depth)
+            t_beta = Ref.t_of(d)
+            assert t_beta == 1, (
+                f"emit_golden_fixture: seed={seed} S-only id {id_} must recover t_beta==1 "
+                f"(single-id syndrome, rank-1 identity, MIN-1), got {t_beta}"
+            )
+            buckets.append((id_, 1, d, t_beta))
+            agg_t += t_beta
+        buckets.sort(key=lambda row: row[0])  # deterministic on-disk order: ascending id
+
+        nR, nS = len(ids_r), len(ids_s)
+        assert (nR + nS - agg_t) % 2 == 0, f"seed={seed}: (nR+nS-t) must be even, t={agg_t}"
+        expected_count = (nR + nS - agg_t) // 2
+        direct_count = len(set_r & set_s)
+        assert expected_count == direct_count, (
+            f"emit_golden_fixture: seed={seed} derived count {expected_count} != direct "
+            f"plaintext intersection {direct_count} (R6-GOLDCONTENT part 4) -- STOP, do not "
+            "write a self-inconsistent golden"
+        )
+        assert direct_count == overlap, f"seed={seed}: direct_count {direct_count} != overlap {overlap}"
+
+        lines: list[str] = []
+        lines.append(f"# sympsica W6.2 golden fixture (generated) - format v{FIXTURE_FORMAT_VERSION}")
+        lines.append(f"# generator: python3 ref/reference.py emit-golden --seed {seed} --out {out_path}")
+        lines.append(f"format {FIXTURE_FORMAT_VERSION}")
+        lines.append(f"seed {seed}")
+        lines.append(f"p {P}")
+        lines.append(f"generator_g {g}")
+        lines.append(f"golden_overlap {overlap}")
+        lines.append(f"golden_nR {nR}")
+        lines.append("golden_ids_r " + " ".join(str(x) for x in ids_r))
+        lines.append(f"golden_nS {nS}")
+        lines.append("golden_ids_s " + " ".join(str(x) for x in ids_s))
+        lines.append(f"golden_bucket_count {len(buckets)}")
+        for id_, sign, d, t_beta in buckets:
+            lines.append(f"golden_bucket {id_} {sign} " + " ".join(str(x) for x in d) + f" {t_beta}")
+        lines.append(f"golden_t {agg_t}")
+        lines.append(f"golden_count {expected_count}")
+
+        with open(out_path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+
+    @staticmethod
+    def build_overflow_demo_data() -> dict:
+        """Builds the SAME planted-5-ids-in-one-bucket construction
+        `_selftest_overflow` (below) already uses -- task-21-brief.md
+        R6-OVFDEMO: "if _selftest_overflow's planted construction already
+        IS 5-ids-in-one-bucket, say so and build the fixture from it." It
+        is; this is that construction, factored out so both
+        _selftest_overflow (unchanged, still runs its own literal
+        assertions at import time) and emit_overflow_fixture (below) share
+        ONE definition of the planted case instead of two independently
+        hand-maintained copies drifting apart.
+
+        Returns a dict with every number the W6.3 fixture/report need:
+        the planted ids/bucket, the Tprime=7 pre-refresh result (flagged,
+        rank), the Tprime=4 result (FC3: must NOT flag, rank <= 4), and
+        the post-refresh Tprime=7 result (FC4: must NOT flag) -- all via
+        REAL Ref.detect_overflow calls, nothing hand-derived.
+        """
+        planted_ids = [10_001, 10_002, 10_003, 10_004, 10_005]
+        bucket = 777
+
+        def planted_oracle(id_: int) -> int:
+            return bucket if id_ in planted_ids else id_
+
+        def refreshed_oracle(id_: int) -> int:
+            return id_
+
+        res7 = Ref.detect_overflow(planted_ids, [], planted_oracle, t_prime=7)
+        res4 = Ref.detect_overflow(planted_ids, [], planted_oracle, t_prime=4)
+        res_refreshed = Ref.detect_overflow(planted_ids, [], refreshed_oracle, t_prime=7)
+
+        return {
+            "planted_ids": planted_ids,
+            "bucket": bucket,
+            "pre_d": res7["detail"][bucket]["d"],
+            "pre_rank": res7["detail"][bucket]["t_prime_rank"],
+            "pre_flagged": bucket in res7["overflowing_buckets"],
+            "t4_rank": res4["detail"][bucket]["t_prime_rank"],
+            "t4_flagged": bucket in res4["overflowing_buckets"],
+            "post_flagged_any": len(res_refreshed["overflowing_buckets"]) > 0,
+            "post_bucket_present": bucket in res_refreshed["detail"],
+            "post_detail": res_refreshed["detail"],
+        }
+
+    @staticmethod
+    def emit_overflow_fixture(out_path: str) -> None:
+        """Emits the W6.3 planted-overflow fixture (task-21-brief.md SC4:
+        "a named, committed fixture rather than an inline selftest").
+        Self-checks the SAME properties _selftest_overflow already proves
+        (SC5/FC3 of task-18-brief.md) before writing -- belt-and-suspenders
+        with the module-level self-test, not a substitute for it.
+        """
+        data = Ref.build_overflow_demo_data()
+        assert data["pre_flagged"], "emit_overflow_fixture: planted bucket must flag at Tprime=7"
+        assert data["pre_rank"] == 5, f"emit_overflow_fixture: expected rank 5, got {data['pre_rank']}"
+        assert not data["t4_flagged"], "emit_overflow_fixture: FC3 -- Tprime=4 must NOT flag"
+        assert data["t4_rank"] <= 4, "emit_overflow_fixture: FC3 -- Tprime=4 rank must be <= 4"
+        assert not data["post_flagged_any"], "emit_overflow_fixture: post-refresh must clear the bucket"
+
+        lines: list[str] = []
+        lines.append(f"# sympsica W6.3 planted-overflow fixture (generated) - format v{FIXTURE_FORMAT_VERSION}")
+        lines.append(f"# generator: python3 ref/reference.py emit-ovf --out {out_path}")
+        lines.append(f"format {FIXTURE_FORMAT_VERSION}")
+        lines.append(f"ovf_bucket {data['bucket']}")
+        lines.append(f"ovf_planted_ids_count {len(data['planted_ids'])}")
+        lines.append("ovf_planted_ids " + " ".join(str(x) for x in data["planted_ids"]))
+        lines.append("ovf_pre_d " + " ".join(str(x) for x in data["pre_d"]))
+        lines.append(f"ovf_pre_rank {data['pre_rank']}")
+        lines.append(f"ovf_pre_flagged {1 if data['pre_flagged'] else 0}")
+        lines.append(f"ovf_t4_rank {data['t4_rank']}")
+        lines.append(f"ovf_t4_flagged {1 if data['t4_flagged'] else 0}")
+        lines.append(f"ovf_post_flagged_any {1 if data['post_flagged_any'] else 0}")
+        lines.append(f"ovf_post_bucket_present {1 if data['post_bucket_present'] else 0}")
+
+        with open(out_path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+
 
 def _selftest_minors() -> None:
     """MIN-2 worked row (task-11-brief.md R-MIN; .handoff/sympsica-test-
@@ -1511,10 +1717,46 @@ def _selftest_cut4() -> None:
     assert all(c >= 0 for c in e_counts)
 
 
+def _selftest_golden() -> None:
+    """Lightweight sanity check of make_golden_pair()'s range arithmetic
+    (task-21-brief.md, additive): a SMALL n (not the full 2^10 golden
+    scale, mirroring _selftest_cut4's own "smaller than the full fixture
+    sample" precedent) still gives the exact overlap requested, and the
+    derived count from a couple of symmetric-difference ids' syndromes
+    agrees with a direct plaintext intersection.
+    """
+    # n=16 forces overlap (37, seed 0's formula value) >= n, which
+    # make_golden_pair itself must reject rather than silently clamp.
+    raised = False
+    try:
+        Ref.make_golden_pair(0, n=16)
+    except AssertionError:
+        raised = True
+    assert raised, "_selftest_golden: overlap >= n must be rejected (37 >= 16 here)"
+
+    ids_r, ids_s, overlap = Ref.make_golden_pair(0, n=64)
+    assert len(set(ids_r) & set(ids_s)) == overlap
+    g = _generator()
+    sym_diff_r = sorted(set(ids_r) - set(ids_s))
+    sym_diff_s = sorted(set(ids_s) - set(ids_r))
+    agg_t = 0
+    for id_ in sym_diff_r:
+        assert Ref.t_of(Ref.syndromes([id_], [], g, 7)) == 1
+        agg_t += 1
+    for id_ in sym_diff_s:
+        assert Ref.t_of(Ref.syndromes([], [id_], g, 7)) == 1
+        agg_t += 1
+    derived_count = (len(ids_r) + len(ids_s) - agg_t) // 2
+    assert derived_count == len(set(ids_r) & set(ids_s)) == overlap, (
+        f"_selftest_golden: derived_count={derived_count} overlap={overlap}"
+    )
+
+
 _selftest_minors()  # module self-test (R-MIN): always runs, aborts via AssertionError on failure
 _selftest_overflow()  # module self-test (task-18-brief.md SC5/FC3): always runs
 _selftest_simulate_days()  # module self-test (task-18-brief.md, R-ORACLE-AGNOSTIC): always runs
 _selftest_cut4()  # module self-test (task-19-brief.md, additive): always runs
+_selftest_golden()  # module self-test (task-21-brief.md, additive): always runs
 
 
 def _cli(argv: list[str]) -> int:
@@ -1557,6 +1799,15 @@ def _cli(argv: list[str]) -> int:
     emit_e2e.add_argument("--out-r", type=str, required=True)
     emit_e2e.add_argument("--out-s", type=str, required=True)
 
+    emit_golden = sub.add_parser("emit-golden",
+                                  help="emit a W6.2 seed-fixed n=2^10 golden (task-21-brief.md SC1)")
+    emit_golden.add_argument("--seed", type=int, required=True)
+    emit_golden.add_argument("--out", type=str, required=True)
+
+    emit_ovf = sub.add_parser("emit-ovf",
+                               help="emit the W6.3 planted-overflow fixture (task-21-brief.md SC4)")
+    emit_ovf.add_argument("--out", type=str, required=True)
+
     args = parser.parse_args(argv)
     if args.cmd == "emit":
         Ref.emit_fixtures(args.seed, args.out)
@@ -1586,6 +1837,14 @@ def _cli(argv: list[str]) -> int:
     if args.cmd == "emit-e2e":
         Ref.emit_e2e_schedule_pair(args.seed, args.out_r, args.out_s)
         print(f"wrote {args.out_r}, {args.out_s} (seed={args.seed})")
+        return 0
+    if args.cmd == "emit-golden":
+        Ref.emit_golden_fixture(args.seed, args.out)
+        print(f"wrote {args.out} (seed={args.seed})")
+        return 0
+    if args.cmd == "emit-ovf":
+        Ref.emit_overflow_fixture(args.out)
+        print(f"wrote {args.out}")
         return 0
     return 1
 
