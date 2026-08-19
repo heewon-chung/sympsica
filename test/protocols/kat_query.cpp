@@ -1038,3 +1038,108 @@ TEST(Query, FC5_WrongSignOnBothPartiesAsymmetricSetsGivesWrongCount) {
     EXPECT_NE(wrong, true_count)
         << "TV-F8-lite: a (+,+) sign build on an asymmetric set pair must reconstruct the wrong count";
 }
+
+// ---------------------------------------------------------------------------
+// ROCCUPIED [regression, task-18-brief.md controller ruling R-OCCUPIED]:
+// found via a real two-process E2E run (task-18-report.md's "found defect"
+// section). run_full()'s old `occupied` computation counted every KEY
+// st.table's underlying map holds, INCLUDING a "ghost" all-zero row left
+// behind by a delete (PowerSumTable::edit decrements a row but never
+// erases it on decrement) -- so a delete that empties a bucket entirely,
+// followed by a full-path query with NO intervening table.rebuild() in
+// between, used to abort:
+//   "SYMPSICA_REQUIRE failed: Query::run: occupied buckets exceed
+//    min(my_size, m) (invariant violation)"
+// This reproduces EXACTLY that shape (delete, then a SECOND full-path
+// query, no rebuild in between) and asserts it now completes normally
+// with the correct count -- the fix (filtering `occupied` to non-zero
+// rows, R-OCCUPIED) is provably exact per Newton's identities (query.cpp's
+// own comment at the fix site has the full argument): a bucket's row can
+// only be all-zero when it holds exactly 0 ids, for any t up to K=7.
+// ---------------------------------------------------------------------------
+
+TEST(Query, ROCCUPIED_DeleteThenFullPathQueryDoesNotAbort) {
+    Params params = Params::instantiate();
+    const Encoder& enc = params.encoder;
+    const BucketOracle& G = params.oracle;
+
+    const std::vector<u64> A = {1, 2, 3};
+    const std::vector<u64> B = {2, 3, 4};
+
+    PartyState st_r, st_s;
+    st_r.my_ids = A;
+    st_r.table.init(A, enc, G);
+    st_r.my_size = A.size();
+    st_s.my_ids = B;
+    st_s.table.init(B, enc, G);
+    st_s.my_size = B.size();
+
+    Pools pool_r, pool_s;
+    run_two_party(
+        next_address(),
+        [&](Channel& ch) { pool_r = Setup::run(Role::Receiver, ch, params, kTinySizes); },
+        [&](Channel& ch) { pool_s = Setup::run(Role::Sender, ch, params, kTinySizes); });
+
+    const std::string path_r = scratch_path("roccupied_r.bin");
+    const std::string path_s = scratch_path("roccupied_s.bin");
+    clear_path(path_r);
+    clear_path(path_s);
+
+    // q1: first query, tiny -> FullPublic (firstQuery unconditional).
+    // Populates st_r.table with a row for G.of(1), among others.
+    run_two_party(
+        next_address(),
+        [&](Channel& ch) { (void)Query::run(Role::Receiver, st_r, pool_r, ch, params, path_r, 7101); },
+        [&](Channel& ch) { (void)Query::run(Role::Sender, st_s, pool_s, ch, params, path_s, 7202); });
+    ASSERT_EQ(st_r.query_no, 1u);
+
+    // Delete id=1 (not in the true intersection -- true count stays 2).
+    // Id 1 is the ONLY id ever inserted into its bucket, so this leaves a
+    // "ghost" all-zero row at G.of(1) in st_r.table (ASSERTED below, this
+    // is the test's own precondition for reproducing the old bug shape --
+    // NOT a claim about production behavior).
+    const u32 beta1 = G.of(1);
+    ASSERT_NE(st_r.table.rows().find(beta1), st_r.table.rows().end())
+        << "test precondition: bucket G.of(1) must have a row before the delete";
+    Update::apply(st_r, std::vector<u64>{}, std::vector<u64>{1}, enc, G);
+    Update::apply(st_s, std::vector<u64>{}, std::vector<u64>{}, enc, G); // no-op, symmetry only
+    ASSERT_EQ(st_r.my_size, 2u) << "test precondition: id 1 actually left st_r.my_ids/my_size";
+    auto it = st_r.table.rows().find(beta1);
+    ASSERT_NE(it, st_r.table.rows().end())
+        << "test precondition: PowerSumTable::edit must NOT erase the row on decrement (this IS "
+           "the ghost-row mechanism under test)";
+    for (Fp v : it->second) {
+        ASSERT_EQ(v.v, 0u) << "test precondition: the ghost row must be exactly all-zero";
+    }
+
+    // q2: a SECOND full-path query, with NO intervening table.rebuild() --
+    // this is the exact shape that used to abort. Reached naturally via
+    // SwitchRule::decide's size condition (2*u_max >= nA+nB at this tiny
+    // scale), not force_full, so this also exercises the REAL SwitchRule
+    // dispatch path, not just run_full() in isolation.
+    Share out_r{}, out_s{};
+    SwitchRule::Path taken{};
+    run_two_party(
+        next_address(),
+        [&](Channel& ch) {
+            out_r = Query::run(Role::Receiver, st_r, pool_r, ch, params, path_r, 7103,
+                                /*force_full=*/false, &taken);
+        },
+        [&](Channel& ch) {
+            out_s = Query::run(Role::Sender, st_s, pool_s, ch, params, path_s, 7204);
+        });
+    EXPECT_TRUE(taken == SwitchRule::Path::FullPublic || taken == SwitchRule::Path::FullAnnounced)
+        << "test precondition: q2 must actually take the full path for this regression to be "
+           "meaningful";
+
+    u64 reconstructed = 0;
+    run_two_party(
+        next_address(), [&](Channel& ch) { reconstructed = Query::open_count(ch, out_r); },
+        [&](Channel& ch) { (void)Query::open_count(ch, out_s); });
+    EXPECT_EQ(reconstructed, 2u) << "true |A meet B| stays {2,3}=2 after deleting id 1 (not in "
+                                     "the intersection)";
+    EXPECT_EQ(st_r.query_no, 2u);
+
+    clear_path(path_r);
+    clear_path(path_s);
+}

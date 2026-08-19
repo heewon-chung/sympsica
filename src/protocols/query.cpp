@@ -266,10 +266,42 @@ Share run_full(Role role, PartyState& st, Pools& pools, Channel& ch, const std::
                u64 seed, u64 my_size, u64 counterpart_size) {
     const u64 target = std::min(my_size, Params::M);
 
+    // R-OCCUPIED (task-18-brief.md controller ruling; found via a real
+    // two-process E2E crash): "occupied" must be the buckets whose row is
+    // NON-ZERO, not every KEY st.table's underlying map happens to hold.
+    // PowerSumTable::edit(id, -1, ...) (a delete) decrements a row's power
+    // sums but never ERASES the map entry, even once every value hits
+    // exactly zero -- so a bucket whose only id(s) were all later deleted
+    // leaves a "ghost" all-zero row behind. table.hpp's own row() contract
+    // already treats an ABSENT row identically to an all-zero row (the
+    // "padding row" convention); this filter simply extends that same
+    // equivalence to a row that is PRESENT but happens to be all-zero.
+    //
+    // This filter is EXACT, not a heuristic, for any t in [0, Params::K]
+    // ids netted into one bucket (t is bounded by K=7 here since a row
+    // only ever stores K=7 power sums; the protocol's own true-occupancy
+    // cap T=4 keeps every REAL bucket well inside that range regardless):
+    // by Newton's identities, power sums p_1..p_t determine the elementary
+    // symmetric polynomials e_1..e_t of the bucket's sigma-values via the
+    // standard recursion (e_1 = p_1; k*e_k = sum_{i=1}^{k} (-1)^(i-1) e_{k-i} p_i);
+    // if p_1 == p_2 == ... == p_t == 0, that recursion forces
+    // e_1 == e_2 == ... == e_t == 0 too, which makes the bucket's own
+    // characteristic polynomial prod_i (X - sigma(x_i)) collapse to X^t --
+    // i.e. every sigma(x_i) == 0. But sigma(x) = g^x (Encoder::sigma) is
+    // never 0 in F_p^* (g is a generator, F_p^* has no zero divisors), a
+    // contradiction unless t == 0. So "row is all-zero" <=> "bucket holds
+    // nothing" exactly, matching the plan's own "occupied buckets of own
+    // table" reading -- not merely "every key ever touched".
     std::set<u32> occupied;
     for (const auto& [beta, row] : st.table.rows()) {
-        (void)row;
-        occupied.insert(beta);
+        bool nonzero = false;
+        for (const Fp& v : row) {
+            if (v.v != 0) {
+                nonzero = true;
+                break;
+            }
+        }
+        if (nonzero) occupied.insert(beta);
     }
     SYMPSICA_REQUIRE(occupied.size() <= target,
                       "Query::run: occupied buckets exceed min(my_size, m) (invariant violation)");

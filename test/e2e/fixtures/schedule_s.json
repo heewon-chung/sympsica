@@ -3,6 +3,6 @@
   {"day":"2023-01-02","insert":[100,101],"delete":[],"query":true,"maintenance":false},
   {"day":"2023-01-03","insert":[102],"delete":[10,11],"query":true,"maintenance":true},
   {"day":"2023-01-04","insert":[],"delete":[],"query":false,"maintenance":false},
-  {"day":"2023-01-05","insert":[103,104],"delete":[],"query":true,"maintenance":false},
+  {"day":"2023-01-05","insert":[103,104],"delete":[100],"query":true,"maintenance":false},
   {"day":"2023-01-06","insert":[],"delete":[],"query":false,"maintenance":false}
 ]

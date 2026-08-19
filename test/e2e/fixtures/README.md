@@ -23,6 +23,11 @@ computation, rather than trusting one generator to grade its own homework.
   approximate target; the exact count is not load-bearing, only that the
   schedule is small (fast) and produces genuinely non-trivial, hand-
   verifiable per-day intersections.
+- `2023-01-05` deletes an id on BOTH sides (R: `3`; S: `100`) on a
+  NON-maintenance query day, immediately preceded by NO
+  `PowerSumTable::rebuild()` — this is deliberate (see "R-OCCUPIED" below),
+  not an oversight: it is exactly the shape that used to abort both real
+  party processes before that fix landed.
 
 ## Expected per-query counts (hand-derived, cross-checked by
 `Ref.simulate_days()`)
@@ -37,8 +42,8 @@ in day order:
 | 01-02 | `{1..30}` | `{10..33,100,101}` | **yes** | `{10..30}` = **21** |
 | 01-03 (maintenance) | `{3..34}` (insert 31-34, delete 1,2) | `{12..33,100,101,102}` (insert 102, delete 10,11) | **yes** | `{12..33}` = **22** |
 | 01-04 | `{3..40}` | `{12..33,100,101,102}` (no-op) | no | — |
-| 01-05 | `{3..44}` (insert 41-44, no delete) | `{12..33,100,101,102,103,104}` (insert 103,104, no delete) | **yes** | `{12..33}` = **22** |
-| 01-06 | `{3..44}` (no-op) | `{12..33,100,101,102,103,104}` (no-op) | no | — |
+| 01-05 | `{4..44}` (insert 41-44, delete 3) | `{12..33,101,102,103,104}` (insert 103,104, delete 100) | **yes** | `{12..33}` = **22** |
+| 01-06 | `{4..44}` (no-op) | `{12..33,101,102,103,104}` (no-op) | no | — |
 
 Expected count sequence: **`[21, 22, 22]`**. `test/e2e/run_smoke.py`
 computes this same sequence via `Ref.simulate_days(schedule_r, schedule_s)`
@@ -46,32 +51,43 @@ computes this same sequence via `Ref.simulate_days(schedule_r, schedule_s)`
 real party processes' JSONL `"count"` fields equal it exactly, in order,
 at every query day.
 
-## Why 01-05 (and every non-maintenance day) carries NO deletes
+## Why 01-05 deletes on a non-maintenance day (R-OCCUPIED)
 
-**Found defect (documented, not fixed here — out of task-18-brief.md's
-file scope, which permits touching `protocols/query.hpp`/`.cpp` only via
-the additive R-FORCEFULL parameter):** `src/protocols/query.cpp`'s
-`run_full()` asserts `occupied.size() <= min(my_size, Params::M)`, where
-`occupied` is every KEY currently present in `PartyState::table`'s
-underlying map. `PowerSumTable::edit(id, -1, ...)` (a delete) decrements
-that bucket's row values but never ERASES the map entry, even once the row
-is exactly all-zero (table.hpp documents the zero row as the padding-row
-convention for reads, but `edit()` itself is silent on removal). At this
-fixture's scale, M = 2^31 makes bucket collisions between our ~49 ids
-astronomically unlikely, so a single id is effectively the sole occupant of
-its bucket — meaning ANY delete leaves a "ghost" zero row that inflates
-`occupied` by one, without `my_size` (which correctly decrements) moving to
-match. A full-path query that runs AFTER such a delete, without an
-intervening `PowerSumTable::rebuild()` in between, then trips
-`run_full()`'s invariant check and aborts.
+**Found and FIXED defect (controller ruling R-OCCUPIED, task-18-brief.md):**
+`src/protocols/query.cpp`'s `run_full()` used to compute `occupied` as
+every KEY present in `PartyState::table`'s underlying map.
+`PowerSumTable::edit(id, -1, ...)` (a delete) decrements a bucket's row
+values but never ERASES the map entry, even once the row is exactly
+all-zero — so a delete that empties a bucket entirely, followed by a
+full-path query with no intervening `PowerSumTable::rebuild()`, used to
+inflate `occupied` past `min(my_size, Params::M)` and trip
+`run_full()`'s own `SYMPSICA_REQUIRE`, aborting BOTH real party processes.
+This fixture originally dodged the shape (kept every non-maintenance day
+insert-only) instead of exercising it; that dodge was rejected (masking a
+symptom rather than fixing the root cause) and this fixture was restored
+to include it once the real fix landed.
 
-`SaltManager::refresh()`'s own `table.rebuild()` (W5.5) clears this
-staleness unconditionally, which is exactly why `2023-01-03`'s two deletes
-(R: `[1,2]`, S: `[10,11]`) are safe: that day IS the maintenance day, so
-its own forced-full query runs immediately AFTER a fresh rebuild. Every
-OTHER day in this fixture is insert-only by construction, specifically to
-avoid re-triggering the same latent issue on a day with no rebuild ahead of
-it. See `task-18-report.md`'s "found defect" section for the full
-reproduction (an earlier draft of this fixture DID delete on `2023-01-05`
-and reproduced `SYMPSICA_REQUIRE failed: Query::run: occupied buckets
-exceed min(my_size, m)` on both real party processes).
+**The fix**: `run_full()` now filters `occupied` to buckets whose row is
+NON-ZERO, matching `table.hpp`'s own `row()` contract (an absent row and
+an all-zero row are already treated identically everywhere else). This
+filter is EXACT, not a heuristic, for any bucket occupancy up to
+`Params::K = 7` (a row only ever stores `K` power sums): by Newton's
+identities, an all-zero power-sum vector forces every elementary symmetric
+polynomial of the bucket's `sigma`-values to vanish too, which forces the
+bucket's characteristic polynomial to `X^t` — i.e. every `sigma(x_i) = 0`,
+impossible since `sigma(x) = g^x` is never `0` in `F_p^*`. So "row is
+all-zero" `<=>` "bucket holds nothing", unconditionally. See
+`src/protocols/query.cpp`'s own comment at the fix site (`run_full`) for
+the full argument, and `test/protocols/kat_query.cpp`'s
+`Query.ROCCUPIED_DeleteThenFullPathQueryDoesNotAbort` for a direct
+regression test that reproduces the exact old abort shape (verified, by
+temporarily reverting the fix, to actually crash without it) and now
+passes.
+
+`2023-01-03` (the maintenance day) still deletes too (R: `[1,2]`, S:
+`[10,11]`) — safe either way, since `SaltManager::refresh()`'s own
+`table.rebuild()` clears any staleness before its own forced-full query
+regardless of this fix. `2023-01-05` is the day that specifically requires
+the fix: a plain, non-maintenance `Query::run` call, reached via
+`SwitchRule::decide`'s ordinary size condition, with a delete immediately
+before it and no rebuild in between.
