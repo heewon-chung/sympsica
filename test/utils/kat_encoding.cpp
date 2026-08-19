@@ -67,6 +67,27 @@ TEST(Encoding, ENC2_ConcreteToyF101) {
     EXPECT_EQ(enc.sigma(1), Fp(enc.generator()));
 }
 
+// --- TV-F4 (negative-as-positive-assert, task-20-brief.md W6.1 / R6-FSUITE:
+// "a row with no wrong construction yet is NEW WORK"). ENC-2 above only
+// PINS the correct value (64) and documents the two misreadings in a
+// comment; this test makes the misreadings EXECUTABLE and asserts they are
+// distinguishable from the real g^x, over the SAME toy field/point ENC-2
+// uses (g=2, p=101, x=6).
+TEST(Encoding, TVF4_LinearAndPowerMisreadingsGiveWrongValue) {
+    constexpr u64 g = 2, p = 101, x = 6;
+    const u64 real_sigma = Encoder::sigma_generic(g, p, x);
+    ASSERT_EQ(real_sigma, 64u); // re-pin ENC-2's own value as this test's precondition
+
+    const u64 wrong_linear = (g * x) % p; // the "sigma as g*x" misreading
+    u64 wrong_power = 1;                  // the "sigma as x^g" misreading
+    for (u64 i = 0; i < g; ++i) wrong_power = (wrong_power * x) % p;
+
+    EXPECT_NE(wrong_linear, real_sigma)
+        << "TV-F4: the g*x misreading must be distinguishable from the real g^x";
+    EXPECT_NE(wrong_power, real_sigma)
+        << "TV-F4: the x^g misreading must be distinguishable from the real g^x";
+}
+
 // ENC-3 [IDENTITY]: BucketOracle range on 10^6 ids -> all in [1..m];
 // chi-square uniformity sanity (non-gating: reported, does not fail the
 // build on a marginal statistic). The only GATING assertion is the range

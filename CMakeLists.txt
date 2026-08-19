@@ -393,6 +393,24 @@ sympsica_add_test_target(integration integration)
 sympsica_add_test_target(gates gates)
 
 # ---------------------------------------------------------------------------
+# task-20-brief.md W6.1 (SC1): test/failure_suite.cpp -- the TV-F negative
+# registry. A standalone translation unit registered directly (NOT via
+# sympsica_add_test_target, which globs a whole test/<dir>/ subtree -- the
+# brief's own file list names test/failure_suite.cpp at test/'s top level,
+# not inside a subdirectory). Needs SYMPSICA_SOURCE_DIR (SC3's deferred-row
+# guard resolves paths like data/parse_ofac.py against the repo root), the
+# same define every other test target gets.
+# ---------------------------------------------------------------------------
+add_executable(sympsica_tests_failure_suite "${CMAKE_SOURCE_DIR}/test/failure_suite.cpp")
+target_link_libraries(sympsica_tests_failure_suite PRIVATE sympsica gtest gtest_main)
+target_compile_definitions(sympsica_tests_failure_suite PRIVATE
+    SYMPSICA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+# TEST_PREFIX "failure." keeps every discovered test name matchable via
+# `-R 'failure|Failure|FSuite'` (requirement 3) without disturbing any
+# existing selector (core|update, query|Query, setup|Setup, heavy).
+gtest_discover_tests(sympsica_tests_failure_suite TEST_PREFIX "failure.")
+
+# ---------------------------------------------------------------------------
 # task-18-brief.md R-E2E-DRIVER (SC6): the two-OS-process smoke E2E for
 # apps/party_main.cpp. NOT a gtest binary (test/e2e/run_smoke.py is plain
 # python3, stdlib only) -- registered directly via add_test, same idiom as

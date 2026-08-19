@@ -76,6 +76,14 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--require-asymmetric", action="store_true",
                          help="FC1: assert the schedule pair is a genuinely asymmetric set "
                               "(|A\\B| != |B\\A|) before running anything")
+    parser.add_argument("--expect-crash-stderr-substring", default=None,
+                         help="task-20-brief.md M2: when --expect-mismatch AND at least one party "
+                              "exits nonzero, this substring must appear in a party's stderr for the "
+                              "crash to be POSITIVELY identified as the expected wrong-construction "
+                              "failure. Without this flag, a nonzero exit under --expect-mismatch is "
+                              "now a hard FAILURE (previously ANY nonzero exit silently read as "
+                              "\"the negative fired\", which would also accept an unrelated crash -- "
+                              "a missing file, a bad argv -- as success)")
     args = parser.parse_args(argv)
 
     ref = load_reference(args.reference)
@@ -169,9 +177,43 @@ def main(argv: list[str]) -> int:
         # wrong construction must not silently pass) -- arguably a more
         # dramatic demonstration than a silent miscount. See
         # task-19-report.md for this run's own captured stderr.
-        print(f"[run_e2e_gate] FC OK: wrong construction crashed at least one party "
-              f"(exit_codes={exit_codes}) instead of completing -- this IS observed failure")
-        return 0
+        #
+        # M2 (task-20-brief.md, carried minor from the Phase-5 gate review):
+        # a bare nonzero exit is NOT enough -- an unrelated crash (a missing
+        # file, a bad argv, a segfault in something this negative never
+        # touches) would ALSO read as "the negative fired" under the old
+        # unconditional `return 0` here. Positively identify the crash via a
+        # required stderr substring instead.
+        with open(stderr_r_path, "rb") as f:
+            stderr_r = f.read().decode("utf-8", "replace")
+        with open(stderr_s_path, "rb") as f:
+            stderr_s = f.read().decode("utf-8", "replace")
+
+        if args.expect_crash_stderr_substring is None:
+            print(f"[run_e2e_gate] FAIL: nonzero exit under --expect-mismatch "
+                  f"(exit_codes={exit_codes}) but no --expect-crash-stderr-substring was given to "
+                  f"positively identify this as the EXPECTED wrong-construction crash -- an "
+                  f"unrelated crash must not silently read as \"the negative fired\" "
+                  f"(task-20-brief.md M2)", file=sys.stderr)
+            print(f"[run_e2e_gate] receiver stderr tail: {stderr_r[-2000:]}", file=sys.stderr)
+            print(f"[run_e2e_gate] sender stderr tail:   {stderr_s[-2000:]}", file=sys.stderr)
+            return 1
+
+        if args.expect_crash_stderr_substring in stderr_r or \
+                args.expect_crash_stderr_substring in stderr_s:
+            print(f"[run_e2e_gate] FC OK: wrong construction crashed at least one party "
+                  f"(exit_codes={exit_codes}) with the EXPECTED signature "
+                  f"'{args.expect_crash_stderr_substring}' -- this IS the identified failure")
+            return 0
+
+        print(f"[run_e2e_gate] FAIL: nonzero exit under --expect-mismatch (exit_codes={exit_codes}) "
+              f"but neither party's stderr contains the expected signature "
+              f"'{args.expect_crash_stderr_substring}' -- this crash did NOT match the expected "
+              f"wrong-construction failure (an unrelated crash, per task-20-brief.md M2)",
+              file=sys.stderr)
+        print(f"[run_e2e_gate] receiver stderr tail: {stderr_r[-2000:]}", file=sys.stderr)
+        print(f"[run_e2e_gate] sender stderr tail:   {stderr_s[-2000:]}", file=sys.stderr)
+        return 1
 
     assert exit_codes["receiver"] == 0, f"receiver exited {exit_codes['receiver']} (expected 0)"
     assert exit_codes["sender"] == 0, f"sender exited {exit_codes['sender']} (expected 0)"

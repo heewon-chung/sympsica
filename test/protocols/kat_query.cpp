@@ -773,6 +773,18 @@ TEST(Query, QRYINC_And_FC3_IncrementalEndToEndPlusDoubleCommitDrift) {
         << "FC3: applying the same commit delta a second time must drift t_share away from the "
            "correct (single-commit) value";
 
+    // M1 (task-20-brief.md, carried minor from the Phase-5 gate review):
+    // the EXPECT_NE above alone would be satisfied by ANY unrelated wrong
+    // value, not specifically the "double-applied the same delta" defect.
+    // Pin the STRUCTURAL SHAPE of the drift in closed form: double-applying
+    // delta must land exactly on before_commit + 2*delta (added, not
+    // replacing the check above).
+    const Fp expected_doubled_delta = t_share_before_commit.add(delta).add(delta);
+    EXPECT_EQ(buggy_double_apply.v, expected_doubled_delta.v)
+        << "FC3 [M1]: the double-applied value must equal before_commit + 2*delta exactly -- "
+           "pinning the drift's structural shape so this negative cannot be satisfied by an "
+           "unrelated wrong value that merely happens to differ from the correct one";
+
     clear_path(path_r);
     clear_path(path_s);
 }

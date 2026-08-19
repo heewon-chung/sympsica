@@ -424,6 +424,44 @@ TEST(GatesMinors, MIN3_InteriorAccidentalZero_MaxRuleTVF7) {
     }
 }
 
+// --- TV-F7 (negative-as-positive-assert, task-20-brief.md W6.1 / R6-FSUITE:
+// "a row with no wrong construction yet is NEW WORK"). MIN-3 above only
+// PINS the correct (max-rule) t and documents the rejected "first zero
+// minor" rule in a comment; this test makes that rejected rule EXECUTABLE
+// on MIN-3's own interior-zero fixture rows and asserts it disagrees with
+// the true t on every one of them.
+TEST(GatesMinors, TVF7_FirstZeroRuleMisreadsInteriorZeroCases) {
+    sympsica_test::Fixture fx(sympsica_test::fixture_path("test/fixtures/min0.fixture"));
+    const auto rows = fx.all("min3");
+    ASSERT_FALSE(rows.empty());
+
+    bool exercised_interior_zero = false;
+    for (const auto& row : rows) {
+        ASSERT_EQ(row.size(), 13u);
+        std::array<Fp, 4> D{};
+        for (int i = 0; i < 4; ++i) D[i] = Fp(std::stoull(row[8 + i]));
+        const u64 t_expected = std::stoull(row[12]);
+
+        if (!D[0].is_zero()) continue; // not an interior-zero case: TV-F7 does not apply
+        exercised_interior_zero = true;
+
+        // The rejected rule: t = index (1-based) of the FIRST zero D_i,
+        // or 0 if none are zero. D[0] is zero by construction here, so
+        // this rule always reports t=1 on these rows.
+        u64 first_zero_t = 0;
+        for (int i = 0; i < 4; ++i) {
+            if (D[i].is_zero()) { first_zero_t = static_cast<u64>(i + 1); break; }
+        }
+        ASSERT_EQ(first_zero_t, 1u)
+            << "test precondition: D_1 == 0 must make the first-zero rule report t=1";
+        EXPECT_NE(first_zero_t, t_expected)
+            << "TV-F7: the first-zero rule must misreport t on an interior-zero case whose true "
+               "t (max rule) is " << t_expected;
+    }
+    ASSERT_TRUE(exercised_interior_zero)
+        << "test precondition: min3 fixture must contain at least one interior-zero (D_1=0) row";
+}
+
 // ---------------------------------------------------------------------------
 // MIN-4 [SEED-FIXED] — all t in {0..4}, 100 random signed sets each (500
 // total): recovered t exact vs reference.py. Runs the REAL two-party
