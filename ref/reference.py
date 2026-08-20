@@ -383,6 +383,22 @@ class Ref:
         lines.append(f"enc2_prod_id {enc2_prod_id}")
         lines.append(f"enc2_prod_sigma {enc2_prod_sigma}")
 
+        # task-28-brief.md carried finding D2 (Task 27 review, optional):
+        # id=6 above never exercises modular reduction -- 37^6 (~2.57e9) is
+        # already far below P (~2.3e18), so a hypothetical modpow that
+        # never actually reduces mod P along the way would still produce
+        # the right answer at id=6. A large id (~2^59, near ENC-1's own
+        # "id < 2^60" precondition) forces g^id through many real
+        # reductions during repeated-squaring exponentiation, so THIS row
+        # is post-reduction: any implementation that drops/short-circuits
+        # the modular reduction would diverge wildly from the correct
+        # value here. Purely additive (a NEW key, `enc2_prod_id2`), so no
+        # already-committed fixture number changes.
+        enc2_prod_id2 = (1 << 59) + 999983
+        enc2_prod_sigma2 = Ref.sigma(enc2_prod_id2, g, P)
+        lines.append(f"enc2_prod_id2 {enc2_prod_id2}")
+        lines.append(f"enc2_prod_sigma2 {enc2_prod_sigma2}")
+
         # (b) mul associativity/canonicity property fixture (10^6 samples).
         # The C++ side regenerates the same (a,b,c) triples from
         # mulprop_prng_seed via splitmix64 + fp_from_u64, computes

@@ -121,6 +121,19 @@ TEST(Encoding, ENC2b_ProductionFieldGoldenRejectsNonExponentialMaps) {
            "field, must be distinguishable from the real g^id at id=6 -- "
            "wrong value would be " << wrong_linear.v << ", real production "
            "sigma(6) is " << real_sigma.v;
+
+    // task-28-brief.md carried finding D2 (Task 27 review, optional): id=6
+    // above never forces modular reduction inside sigma's exponentiation
+    // (37^6 << P). This second golden, at an id near 2^59, does -- at
+    // least one asserted ENC-2b value is now post-reduction, not just
+    // exponential.
+    const u64 id2 = fx.u64_at("enc2_prod_id2");
+    const u64 golden2 = fx.u64_at("enc2_prod_sigma2");
+    ASSERT_GE(id2, 1ull << 58) << "D2 golden must actually be large enough to force reduction";
+    const Fp real_sigma2 = enc.sigma(id2);
+    ASSERT_EQ(real_sigma2, Fp(golden2))
+        << "production Encoder::sigma diverged from ref/reference.py's "
+           "independently-computed g^id mod p at a large (post-reduction) id";
 }
 
 // --- TV-F4 (negative-as-positive-assert, task-20-brief.md W6.1 / R6-FSUITE:
