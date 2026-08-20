@@ -81,6 +81,21 @@ TEST(CoreSelfCheck, TBL2_RowZeroIsSigmaForSingleId) {
     EXPECT_EQ(row[0], enc.sigma(id));
 }
 
+// task-24-brief.md CARRIED FINDING (R6-NOTAUTO demonstration): the in-class
+// initializer added to PartyState::t_share (core/state.hpp) is proven by
+// showing a default-constructed PartyState now reliably reads t_share as
+// Fp(0). A "before" demonstration (was it indeterminate pre-fix?) is
+// deliberately NOT attempted here -- reading an uninitialized Fp is
+// undefined behavior, so the pre-fix value is not a reproducible fact to
+// assert against; the brief's own carried-finding text explicitly names
+// this case as one where honesty about non-reproducibility is the correct
+// answer, not a reason to skip the (reproducible) after-side demonstration.
+TEST(CoreSelfCheck, DefaultConstructedPartyState_TShareReadsCanonicalZero) {
+    PartyState st;
+    EXPECT_EQ(st.t_share, Share{Fp(0)});
+    EXPECT_EQ(st.t_share.v.v, 0u);
+}
+
 // --- save() -> load() round trip equality ----------------------------------
 TEST(CoreSelfCheck, SaveLoadRoundTrip) {
     Params params = Params::instantiate();
