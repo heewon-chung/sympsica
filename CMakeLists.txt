@@ -560,6 +560,19 @@ add_test(NAME overflow.PlantedFiveIdsFlagAtT7AndClearAfterRefresh
     COMMAND python3 "${CMAKE_SOURCE_DIR}/test/overflow/gen_overflow_demo.py")
 
 # ---------------------------------------------------------------------------
+# Phase 7 W7.4 (phase-7-plan.md): the OFAC data-pipeline gates. Stdlib-only
+# python3 unittest (no pytest -- controller ruling, progress.md Phase-7
+# pre-flight), registered via the same native-add_test-running-python3 idiom
+# as the E2E drivers and the overflow demo above. Labeled "data"; cheap
+# (seconds), so they ride in T1 (-LE heavy excludes only the heavy label).
+# data.OFC1: exact pinned-convention stats (days/total/median/p90/max) --
+# on failure the message points at data/PROVENANCE.md (Phase-7 FC).
+# ---------------------------------------------------------------------------
+add_test(NAME data.OFC1
+    COMMAND python3 "${CMAKE_SOURCE_DIR}/data/test_ofac.py" TestOFC1)
+set_tests_properties(data.OFC1 PROPERTIES LABELS "data" TIMEOUT 60)
+
+# ---------------------------------------------------------------------------
 # task-24-brief.md W6.6(i)/R6-MASKSTAT: the one-shot 10^5-mask-uniformity
 # campaign generator. A standalone executable (same idiom as `party`/
 # `crash_probe` above, not a gtest binary -- test/campaign/mask_campaign_gen.cpp

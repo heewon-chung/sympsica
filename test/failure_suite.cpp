@@ -21,8 +21,9 @@
 // 6 -- four rows (TV-F14..F17) have no subject code yet; their subjects
 // are owned by later phases (.handoff/sympsica-plan.md's Phase->file
 // ownership table). This registry ships all 17 rows in exactly one of two
-// states: COVERED (13 rows, TV-F1..TV-F13) or DEFERRED-TO-PHASE-n (4
-// rows), never silently absent. Each DEFERRED row names its owning phase
+// states: COVERED (14 rows, TV-F1..TV-F14 as of task-29) or
+// DEFERRED-TO-PHASE-n (3 rows, TV-F15..TV-F17), never silently absent.
+// Each DEFERRED row names its owning phase
 // AND its missing subject file, and SC3's guard below asserts that file
 // is currently ABSENT -- a SELF-EXPIRING deferral: the moment a later
 // phase creates that file, this suite FAILS, forcing the row to be wired
@@ -234,13 +235,22 @@ constexpr std::array<Row, 17> kRegistry{{
  "this usage",
  "", ""},
 
-{"TV-F14", RowState::kDeferred,
- "data/parse_ofac.py (abbreviation-aware OFAC parser)",
- "OFC-1 (median 28 != 42, per the pinned naive convention -- PROVENANCE.md) has no subject code "
- "at Phase 6; per .handoff/sympsica-plan.md's Phase->file ownership table, data/parse_ofac.py is "
- "created in Phase 7",
- "", "",
- "Phase 7", "data/parse_ofac.py"},
+{"TV-F14", RowState::kCovered,
+ "data/parse_ofac.py (--wrong-abbrev: abbreviation-aware entry termination, TEST-ONLY flag, "
+ "refuses --out-dir) -- data/test_ofac.py",
+ "an abbreviation-aware parse (pinned 13-entry list a.k.a./f.k.a./n.k.a./No./Ltd./Co./Inc./St./"
+ "Jr./U.S./S.A./LLC./Corp.) refuses to terminate entries at abbreviation-final lines, merging "
+ "adjacent entries: total=8574, median=31 vs the pinned convention's total=11499, median=42, so "
+ "OFC-1's exact-stats assertion FAILS pointing at data/PROVENANCE.md. NOTE (controller pre-flight "
+ "ruling, Phase 7): the original deferred row predicted median 28; that number depended on an "
+ "unspecified abbreviation list and is NOT reproducible -- the pinned list above is now the "
+ "recorded wrong construction and 31 is its observed median",
+ "python3 data/test_ofac.py --wrong-abbrev TestOFC1",
+ "FAILED (task-29, this run): AssertionError: Tuples differ: (114, 8574, 31, 142, 762) != "
+ "(114, 11499, 42, 181, 961) -- OFC-1: (days,total,median,p90,max) diverge from the pinned parse "
+ "convention -- see data/PROVENANCE.md for the pinned convention and percentile rule; unittest "
+ "summary: Ran 1 test in 0.032s, FAILED (failures=1)",
+ "", ""},
 
 {"TV-F15", RowState::kDeferred,
  "bench/measure.sh (bench harness: bytes reported as sent+received instead of per-party OUTGOING)",
@@ -343,9 +353,8 @@ TEST(FSuite, Registry_PinnedCounts13Covered4Deferred) {
             ++deferred;
         }
     }
-    EXPECT_EQ(covered, 13u) << "Phase-6 target (task-20-brief.md R6-FSUITE-17): TV-F1..TV-F13 "
-                                "COVERED";
-    EXPECT_EQ(deferred, 4u) << "Phase-6 target: TV-F14..TV-F17 DEFERRED-TO-PHASE-n";
+    EXPECT_EQ(covered, 14u) << "Phase-7 target (task-29): TV-F1..TV-F14 COVERED";
+    EXPECT_EQ(deferred, 3u) << "Phase-7 target: TV-F15..TV-F17 DEFERRED-TO-PHASE-n";
 }
 
 // SC2: every COVERED row must carry a non-empty reproduction command and
