@@ -30,7 +30,18 @@ struct PartyState {
     // round trip depend on this; unordered_map's own iteration order is
     // unspecified and MUST NOT reach the wire/disk format).
     std::unordered_map<u32, Share> cache;
-    Share t_share;
+    // task-24-brief.md CARRIED FINDING (Task-20-controller-found trap, not a
+    // live bug -- apps/party_main.cpp already explicitly zero-inits a fresh
+    // party's t_share, and that explicit init is intentionally left in
+    // place below): every OTHER scalar member here self-initializes
+    // (my_size/query_no both `= 0`), which invites the reasonable but wrong
+    // assumption that t_share does too. Without this initializer, a
+    // default-constructed PartyState left t_share's Fp reading whatever
+    // garbage happened to occupy that memory -- undefined behavior, and
+    // exactly what bit a Task-20 implementer's first draft. Fp(0) is the
+    // canonical zero of the field (field.hpp), matching what firstQuery's
+    // REPLACE semantics (query_no == 0) expect to overwrite regardless.
+    Share t_share{Fp(0)};
     u64 my_size = 0;
 
     // query_no — task-17-brief.md R-QNO: number of queries this party has
