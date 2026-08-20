@@ -3,16 +3,9 @@
 - URL: https://www.treasury.gov/ofac/downloads/sdnnew23.txt
 - Accessed: 2026-08-20 (HTTP 200, text/plain,
   last-modified: Thu, 28 Dec 2023 15:06:24 GMT — a frozen 2023 archive)
-- Size: 2,710,116 bytes, 46,384 lines [^size-note]
+- Size: 2,710,116 bytes, 46,384 lines
 - SHA-256: 92f04e19c0082a1fdae778f88960180ca1e4ff037af40773b49ce56fd5f35920
   (verify: `cd data && shasum -a 256 -c SHA256SUMS`)
-
-[^size-note]: The originating plan (`phase-7-plan.md` Ground truth) recorded "2,600,000 bytes";
-the actual committed file (SHA-256- and line-count-verified against that same plan) measures
-2,710,116 bytes via `wc -c` / `stat -f%z`. The SHA-256 and 46,384-line count both match the plan
-exactly, confirming this is the correct file; only the plan's byte-count figure appears to have
-been transcribed from a rounded `ls -la` "2.6 MB" display rather than an exact byte count. This
-note records the exact, independently verified figure.
 
 ## The pinned parse convention (.handoff/sympsica-plan.md W7.1, verbatim)
 
