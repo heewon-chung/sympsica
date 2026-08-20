@@ -334,6 +334,40 @@ FC4 directly, and on success (re)generates `docs/overflow_demo.md` -- see
 that script's own top comment and `docs/overflow_demo.md`'s own opening
 disclaimer paragraph for the full R6-OVFSCOPE statement.
 
+## `mask_uniformity_1e5.fixture` (task-24-brief.md W6.6(i), R6-MASKSTAT)
+
+10^5 raw 61-bit logical masks (`mask <u64 decimal>` per line, this
+directory's usual `key value` convention), generated ONCE through the REAL
+production pipeline (`protocols/detail/ztgate_pipeline.hpp`'s
+`generate_ztgates`) by `test/campaign/mask_campaign_gen.cpp` and committed
+as raw values (not a pre-binned histogram), so any later statistic can be
+recomputed from this file directly.
+
+**These are test-run artifacts, NOT live secrets.** A ZtGate mask is a
+one-time, per-gate value consumed by the online z-test's masked opening
+(`z = D + r mod p`) and never reused; the 10^5 values here were generated
+by a throwaway campaign run whose keys/PRNG state were never persisted
+anywhere and have no relationship to any production correlation ever
+generated for a real party. Committing this file is exactly like committing
+`golden_seed0.fixture` above — a pinned sample for a statistical test, not
+a leak of anything a real deployment depends on.
+
+Regenerate with (see `task-24-report.md` for the exact invocation actually
+used, its measured wall-clock, and this file's SHA256):
+
+```
+mask_campaign_gen --out test/fixtures/mask_uniformity_1e5.fixture --count 100000
+```
+
+**Consumer:** `test/protocols/kat_mask_uniformity.cpp`'s
+`MaskUniformity.SC4_BinnedChiSquarePassesForAllFourDigitPositionsOfCommittedFixture`
+recomputes the pre-registered chi-square statistics
+(`test/utils/mask_chisq.hpp`) from this file in seconds; the generator
+itself is registered separately (`campaign.GenerateMaskUniformityFixture1e5`,
+labels `heavy;campaign`, `DISABLED` unless configured with
+`-DSYMPSICA_ENABLE_MASK_CAMPAIGN=ON`) so the ~1.5-2h generation cost is
+never paid by a normal `ctest` run.
+
 ## `generator_g.txt` (ENC-5, `[POST-GATE]`)
 
 Separate from the per-seed fixtures: a single line, `37`, pinning the
