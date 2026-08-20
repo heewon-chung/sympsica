@@ -240,7 +240,15 @@ TEST(GoldenCheap, SC2_TenSeedsMatchReferencePyExactly) {
         for (u64 id : id_union) {
             u32 beta = params_r.oracle.of(id);
             auto [it, inserted] = beta_to_id.emplace(beta, id);
-            ASSERT_TRUE(inserted) << "real BucketOracle collision: ids " << it->second << " and "
+            // task-25-brief.md M-INJ (carried finding, Task 21 review):
+            // EXPECT_TRUE, not ASSERT_TRUE -- this runs inside the bare
+            // per-seed loop (not a SCOPED_TRACE'd sub-scope with its own
+            // early-return boundary), so an ASSERT_TRUE here would abort
+            // the WHOLE TEST at the first offending seed, silently skipping
+            // every later seed's own diagnostics. EXPECT_TRUE still fails
+            // the test (a non-fatal failure still marks the test FAILED at
+            // teardown) but lets every seed report independently.
+            EXPECT_TRUE(inserted) << "real BucketOracle collision: ids " << it->second << " and "
                                    << id << " both map to bucket " << beta
                                    << " -- golden's virtual-bucket-per-id assumption is violated "
                                       "for this seed; see this file's top comment";
