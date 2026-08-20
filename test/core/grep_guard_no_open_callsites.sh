@@ -31,6 +31,23 @@
 # file-precise (not a directory blanket): query.cpp contains exactly this
 # one `open(` call, so excluding the file is equivalent to excluding the
 # exact call site.
+#
+# task-24-brief.md W6.6(iii)/R6-GREPRECON (reconciliation note, no
+# behavior change): the plan's own W6.6(iii) wording asks for a guard that
+# "asserts `open(` appears only in gates/ (masked openings), the final
+# output conversion, and tests". THIS guard is already STRICTER than that:
+# it forbids `open(` under src/+include/ ENTIRELY except the two exact
+# whitelisted files above (core/share.{hpp,cpp}'s own declaration/
+# definition and query.cpp's one legitimate call site) -- it does NOT
+# additionally whitelist a `gates/` directory, because there is nothing to
+# whitelist there: the gates under src/gates/ perform MASKED openings
+# (calling gate-internal reconstruction helpers, never `Channel&, Share`'s
+# raw `open()` directly), so this guard already finds ZERO `open(` hits
+# anywhere under src/gates/ or include/sympsica/gates/ today, verified by
+# running it. Do NOT "fix" this guard to add a `gates/` exclusion to match
+# the plan's looser phrasing -- doing so would WEAKEN it, by legalizing a
+# raw `open()` call site inside a gate that does not exist yet and, per
+# plan W3.1, must never exist.
 set -eu
 
 if [ "$#" -ne 1 ]; then

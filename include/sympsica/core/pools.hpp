@@ -90,12 +90,27 @@ public:
     // Total items ever added via refill().
     u64 generated() const { return generated_; }
 
+    // debug_last_consumed() — task-24-brief.md W6.6(iv)/R6-DPFKEY/SC7 test
+    // hook: the pool's OWN residual copy of the most recently
+    // take()n/take_by_id()n item, AFTER take()/take_by_id() have run their
+    // zeroization step on it (see pools.cpp). For ZtGatePool this is what a
+    // test inspects to confirm the DPF key was actually scrubbed from the
+    // pool's own storage, not merely handed to the caller unmodified --
+    // T = Triple never zeroizes anything (Triple carries no key material),
+    // so this is just whatever the ordinary take() left behind there. The
+    // accessor exists uniformly on the shared template (rather than only on
+    // ZtGatePool) to avoid a template specialization just for one debug
+    // hook; it costs one extra T-sized member on TriplePool too, which is
+    // cheap (Triple has no key).
+    const T& debug_last_consumed() const { return last_consumed_; }
+
 private:
     std::list<u64> order_; // FIFO order of available corr_ids
     std::unordered_map<u64, std::pair<T, typename std::list<u64>::iterator>> available_;
     std::unordered_set<u64> consumed_set_;
     std::vector<u64> consumed_log_;
     u64 generated_ = 0;
+    T last_consumed_{}; // see debug_last_consumed() above
 };
 
 } // namespace detail
