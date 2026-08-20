@@ -93,11 +93,21 @@ TEST(NetSmoke, FC1_ChannelConstructionCounterIncrementsOnRealConstruction) {
     server.join();
 
     const u64 after = Channel::construction_count();
-    // Exactly 2 Channels were constructed in THIS test (one server, one
-    // client) -- other tests in this same binary may construct more
-    // Channels before or after this one runs (the counter is process-wide
-    // and never reset), so the assertion is a delta, not an absolute value.
-    EXPECT_EQ(after - before, 2u)
+    // task-25-brief.md M1 (carried finding, Task 24 review): EXPECT_GE, not
+    // EXPECT_EQ(..., 2u). At least 2 Channels were constructed in THIS test
+    // (one server, one client) -- but connect_client_with_retry() (above)
+    // constructs a FRESH Channel PER CONNECT ATTEMPT, and the counter
+    // deliberately counts every throwing attempt too, not just the
+    // succeeding one -- so a first-attempt connect race (the server socket
+    // not yet listening) legitimately makes the client-side delta 2 or
+    // more, and an exact-equality assertion flakes under that ordinary
+    // timing variance. This is an OVER-count only (the counter still never
+    // under-reports), so >= 2 is the real invariant; other tests in this
+    // same binary may also construct more Channels before or after this
+    // one runs (the counter is process-wide and never reset), which is the
+    // other reason this must be a delta, not an absolute value.
+    EXPECT_GE(after - before, 2u)
         << "before=" << before << " after=" << after
-        << " -- Channel::construction_count() did not observe the two real constructions above";
+        << " -- Channel::construction_count() did not observe at least the two real "
+           "constructions above";
 }
