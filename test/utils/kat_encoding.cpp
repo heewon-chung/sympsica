@@ -21,6 +21,7 @@
 #include "fixture_support.hpp"
 
 using namespace sympsica;
+using sympsica_test::Fixture;
 using sympsica_test::fixture_path;
 
 // ENC-1 [IDENTITY]: sigma injectivity on 10^5 random distinct ids -> all
@@ -58,13 +59,68 @@ TEST(Encoding, ENC1_SigmaInjectivity1e5) {
 // two ways: the sigma(6) = 64 row itself already rules out the linear
 // misreading g*x = 12 and the power misreading x^g = 6^2 = 36; sigma(1) = g
 // exactly is asserted directly against the real (non-toy) Encoder too.
+//
+// task-27-brief.md Important #1/codex/phase-0-1-review.md: this test alone
+// does NOT establish that production Encoder::sigma is exponential -- every
+// assertion above either calls the separate sigma_generic hook, or (for
+// sigma(1)==g) is ALSO true of the rejected linear reading sigma(id)=g*id.
+// See ENC2b_ProductionFieldGoldenRejectsNonExponentialMaps below, which is
+// the test that actually closes this finding.
 TEST(Encoding, ENC2_ConcreteToyF101) {
     EXPECT_EQ(Encoder::sigma_generic(2, 101, 0), 1u);
     EXPECT_EQ(Encoder::sigma_generic(2, 101, 1), 2u);
     EXPECT_EQ(Encoder::sigma_generic(2, 101, 6), 64u);
 
-    Encoder enc; // TV-F4: sigma(1) = g exactly, on the real field.
+    Encoder enc; // sigma(1) = g exactly, on the real field -- necessary but
+                 // NOT sufficient (also true of sigma(id)=g*id); see ENC2b.
     EXPECT_EQ(enc.sigma(1), Fp(enc.generator()));
+}
+
+// ENC-2b [CONCRETE, production field] — task-27-brief.md Important #1,
+// R6-NOTAUTO: the test that actually establishes production Encoder::sigma
+// is exponential, on a golden generated independently by ref/reference.py
+// (Ref.sigma(6, g, P) via plain Python pow(), NOT copied from any C++
+// output) over the REAL field p = 2^61-1, not the toy F_101 hook above.
+//
+// id=6 is the reviewer's own suggested distinguishing input: the rejected
+// non-exponential map sigma(0)=1, sigma(1)=g, sigma(id)=id+100 for id>=2
+// agrees with the real g^id at id=0 and id=1 (the only points ENC-1/ENC-2
+// pin on the production field) but diverges wildly at id=6, since g^6 mod p
+// has no reason to equal 6+100=106 for this p. The g*x linear misreading is
+// re-checked here too, now against production Fp/Encoder instead of the toy
+// hook (closing the brief's "re-attach TV-F4's g*x negative to a mutation of
+// production sigma, not the toy hook").
+TEST(Encoding, ENC2b_ProductionFieldGoldenRejectsNonExponentialMaps) {
+    Fixture fx(fixture_path("test/fixtures/seed0.fixture"));
+    const u64 id = fx.u64_at("enc2_prod_id");
+    const u64 golden = fx.u64_at("enc2_prod_sigma");
+    ASSERT_EQ(id, 6u);
+
+    Encoder enc;
+    const Fp real_sigma = enc.sigma(id);
+    ASSERT_EQ(real_sigma, Fp(golden))
+        << "production Encoder::sigma(6) diverged from ref/reference.py's "
+           "independently-computed g^6 mod p";
+
+    // Reviewer's counterexample map: sigma(0)=1, sigma(1)=g, sigma(id)=id+100
+    // for id>=2. It survives ENC-1 (injective/nonzero) and ENC-2's
+    // sigma(1)==g check, but must be REJECTED by this golden.
+    const Fp wrong_nonexponential(id + 100);
+    EXPECT_NE(wrong_nonexponential, real_sigma)
+        << "R6-NOTAUTO: the reviewer's non-exponential map sigma(id)=id+100 "
+           "(id>=2) must be distinguishable from the real g^id at id=6 -- "
+           "wrong value would be " << (id + 100) << ", real production "
+           "sigma(6) is " << real_sigma.v;
+
+    // TV-F4's "sigma as g*x" misreading, re-attached to PRODUCTION Fp/g
+    // (not the toy-field g=2,p=101,x=6 hook TVF4_LinearAndPowerMisreadingsGiveWrongValue
+    // below still uses for its own, separate, toy-field pinning).
+    const Fp wrong_linear = Fp(enc.generator()).mul(Fp(id));
+    EXPECT_NE(wrong_linear, real_sigma)
+        << "R6-NOTAUTO: the g*x misreading, computed on the PRODUCTION "
+           "field, must be distinguishable from the real g^id at id=6 -- "
+           "wrong value would be " << wrong_linear.v << ", real production "
+           "sigma(6) is " << real_sigma.v;
 }
 
 // --- TV-F4 (negative-as-positive-assert, task-20-brief.md W6.1 / R6-FSUITE:

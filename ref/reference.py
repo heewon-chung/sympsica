@@ -326,6 +326,8 @@ class Ref:
 
           (a) FLD-4 boundary-reduction golden rows (deterministic, not
               seed-dependent — computed once per file for completeness).
+          (a2) ENC-2 production-field sigma(id) golden, task-27-brief.md
+              Important #1 (deterministic, not seed-dependent, same as (a)).
           (b) mul associativity/canonicity property-test fixture: a pinned
               splitmix64 seed + sample count + a digest of the expected
               product sequence (10^6 samples by default at Phase-1 SC).
@@ -360,6 +362,26 @@ class Ref:
         lines.append(f"fld4_count {len(fld4_rows)}")
         for x, y in fld4_rows:
             lines.append(f"fld4 {x} {y}")
+
+        # (a2) ENC-2 production-field golden (task-27-brief.md Important #1
+        # / codex/phase-0-1-review.md): a distinguishing sigma(id) value on
+        # the REAL production field (P, g), not the toy F_101 hook. Deterministic
+        # (not seed-dependent, same reasoning as fld4 above): sigma(id) = g^id
+        # mod P depends only on the fixed g/P, so this row is identical across
+        # every committed seed's fixture; kat_encoding.cpp reads it from
+        # seed0.fixture (same "canonical source" convention as FLD-4).
+        #
+        # id=6 (the reviewer's suggested distinguishing input) rules out the
+        # rejected non-exponential map sigma(0)=1, sigma(1)=g, sigma(id)=id+100
+        # for id>=2 -- that map agrees with the real g^id at id=0 and id=1 but
+        # diverges at id=6 (g^6 mod P is astronomically far from 106 mod P for
+        # this P), so this single row is sufficient to distinguish exponentiation
+        # from that whole class of "matches on a couple of special values" wrong
+        # readings, unlike sigma(1)==g alone.
+        enc2_prod_id = 6
+        enc2_prod_sigma = Ref.sigma(enc2_prod_id, g, P)
+        lines.append(f"enc2_prod_id {enc2_prod_id}")
+        lines.append(f"enc2_prod_sigma {enc2_prod_sigma}")
 
         # (b) mul associativity/canonicity property fixture (10^6 samples).
         # The C++ side regenerates the same (a,b,c) triples from
