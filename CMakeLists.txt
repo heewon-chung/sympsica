@@ -370,6 +370,21 @@ sympsica_add_test_target(core core)
 add_test(NAME core.GrepGuard_NoOpenCallSitesOutsideShare
     COMMAND sh "${CMAKE_SOURCE_DIR}/test/core/grep_guard_no_open_callsites.sh" "${CMAKE_SOURCE_DIR}")
 
+# task-24-brief.md W6.5 CG-A(ii)/R6-CGA-RUNTIME: the STATIC leg of "Channel
+# object was never constructed" on apps/party_main.cpp's --update-only path
+# (see test/core/grep_guard_no_channel_update_only.sh's own header for the
+# two independent checks it runs). Same native-add_test idiom as the R-GREP
+# guard above.
+add_test(NAME core.GrepGuard_NoChannelInUpdateOnly
+    COMMAND sh "${CMAKE_SOURCE_DIR}/test/core/grep_guard_no_channel_update_only.sh" "${CMAKE_SOURCE_DIR}")
+
+# task-24-brief.md W6.6(iii)/R6-DPFKEY: sibling to the R-GREP guard above --
+# "DPF keys are never serialized outside the pool store" (see
+# test/core/grep_guard_no_dpf_key_serialization.sh's own header for the
+# three independent checks it runs).
+add_test(NAME core.GrepGuard_NoDpfKeySerialization
+    COMMAND sh "${CMAKE_SOURCE_DIR}/test/core/grep_guard_no_dpf_key_serialization.sh" "${CMAKE_SOURCE_DIR}")
+
 # test/protocols/*.cpp -> sympsica_tests_protocols, TEST_PREFIX "update." --
 # task-11-brief.md requirement 1: the design tree names
 # test/protocols/kat_update.cpp, but the per-directory-name TEST_PREFIX
@@ -499,3 +514,54 @@ endif()
 # ---------------------------------------------------------------------------
 add_test(NAME overflow.PlantedFiveIdsFlagAtT7AndClearAfterRefresh
     COMMAND python3 "${CMAKE_SOURCE_DIR}/test/overflow/gen_overflow_demo.py")
+
+# ---------------------------------------------------------------------------
+# task-24-brief.md W6.6(i)/R6-MASKSTAT: the one-shot 10^5-mask-uniformity
+# campaign generator. A standalone executable (same idiom as `party`/
+# `crash_probe` above, not a gtest binary -- test/campaign/mask_campaign_gen.cpp
+# has its own plain main()), registered via native `add_test` so it is
+# discoverable/documented via `ctest -R campaign` / `ctest -L campaign`, but
+# DISABLED by default (R6-MASKSTAT: "EXCLUDED from the default ctest set") --
+# a ~1.5-2h test must never run inside a normal `ctest --no-tests=error`
+# invocation. To actually (re)generate the committed fixture: reconfigure
+# with -DSYMPSICA_ENABLE_MASK_CAMPAIGN=ON, rebuild, then
+# `ctest --test-dir build -R campaign.GenerateMaskUniformityFixture1e5`
+# (or invoke the built `mask_campaign_gen` binary directly -- see
+# task-24-report.md for the exact invocation line and measured wall-clock).
+# ---------------------------------------------------------------------------
+add_executable(mask_campaign_gen "${CMAKE_SOURCE_DIR}/test/campaign/mask_campaign_gen.cpp")
+target_link_libraries(mask_campaign_gen PRIVATE sympsica)
+
+option(SYMPSICA_ENABLE_MASK_CAMPAIGN
+    "Enable the one-shot 10^5-mask-uniformity generation campaign (task-24-brief.md R6-MASKSTAT) as a runnable ctest entry; OFF by default so a normal ctest invocation never runs this ~1.5-2h test"
+    OFF)
+
+add_test(NAME campaign.GenerateMaskUniformityFixture1e5
+    COMMAND mask_campaign_gen
+            --out "${CMAKE_SOURCE_DIR}/test/fixtures/mask_uniformity_1e5.fixture"
+            --count 100000)
+# TIMEOUT 10800s (3h) matches R6-MASKSTAT's own escalation bound ("if
+# generation would exceed 3 hours, escalate before trimming N") -- this
+# TIMEOUT is the automated version of that same bound, not an arbitrary
+# safety margin.
+set_tests_properties(campaign.GenerateMaskUniformityFixture1e5
+    PROPERTIES LABELS "heavy;campaign" TIMEOUT 10800)
+if(NOT SYMPSICA_ENABLE_MASK_CAMPAIGN)
+    set_tests_properties(campaign.GenerateMaskUniformityFixture1e5 PROPERTIES DISABLED TRUE)
+endif()
+
+# ---------------------------------------------------------------------------
+# task-24-brief.md W6.5 CG-A: zero-communication Update claim gate. NOT a
+# gtest binary (test/e2e/run_cga_gate.py is plain python3, stdlib only) --
+# same native-add_test-running-python3 idiom as the other E2E drivers. Only
+# wired once `party` exists (Phase-5-owned, same EXISTS guard used
+# throughout this file); the binary path is threaded in via
+# $<TARGET_FILE:party>, never hardcoded.
+# ---------------------------------------------------------------------------
+if(TARGET party)
+    add_test(NAME e2e.CGAZeroCommunicationUpdate
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/test/e2e/run_cga_gate.py"
+                --party-bin "$<TARGET_FILE:party>"
+                --workdir "${CMAKE_CURRENT_BINARY_DIR}/cga_gate_workdir")
+    set_tests_properties(e2e.CGAZeroCommunicationUpdate PROPERTIES TIMEOUT 120)
+endif()
