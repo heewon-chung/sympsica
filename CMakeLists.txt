@@ -551,6 +551,29 @@ if(NOT SYMPSICA_ENABLE_MASK_CAMPAIGN)
 endif()
 
 # ---------------------------------------------------------------------------
+# task-25-brief.md R6-COLLIDE-PIN / R1 (plan-review revision): the one-shot
+# four-way BucketOracle-collision search utility. Same idiom as
+# mask_campaign_gen above (a standalone executable with its own plain
+# main(), not a gtest binary), registered via native `add_test` for
+# discoverability (`ctest -R campaign` / `ctest -L campaign`) but DISABLED
+# unconditionally -- unlike the mask campaign above, there is no knob that
+# ever needs to re-enable this as a routine ctest entry: its sole purpose is
+# generating the pinned id/bucket constants committed directly into
+# test/gates/kat_multiid_bucket.cpp (R6-COLLIDE-PIN), and that KAT's own
+# SC2 re-verifies those constants still collide under the CURRENT oracle on
+# every normal run, cheaply. Re-run this manually only if that
+# re-verification ever fails (e.g. the oracle changes) -- see
+# task-25-report.md for the exact invocation used and its measured
+# draw counts / wall-clock / peak memory.
+# ---------------------------------------------------------------------------
+add_executable(find_bucket_collision "${CMAKE_SOURCE_DIR}/test/campaign/find_bucket_collision.cpp")
+target_link_libraries(find_bucket_collision PRIVATE sympsica)
+
+add_test(NAME campaign.FindFourWayBucketCollision COMMAND find_bucket_collision)
+set_tests_properties(campaign.FindFourWayBucketCollision
+    PROPERTIES LABELS "campaign" DISABLED TRUE)
+
+# ---------------------------------------------------------------------------
 # task-24-brief.md W6.5 CG-A: zero-communication Update claim gate. NOT a
 # gtest binary (test/e2e/run_cga_gate.py is plain python3, stdlib only) --
 # same native-add_test-running-python3 idiom as the other E2E drivers. Only
