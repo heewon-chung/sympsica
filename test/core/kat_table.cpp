@@ -131,7 +131,37 @@ TEST(Table, TBL3_EditPlusMinusIdentitySeeded) {
 
 // --- TBL-4: syndrome cancellation for A=B -- all d_k = 0, every touched
 // bucket, over 10 random sets (seeds 0..9).
-TEST(Table, TBL4_SyndromeCancellationAeqB) {
+//
+// HONEST LABEL (task-28-brief.md item 1, PLAN-REVIEW REVISIONS R1, Route 1
+// -- superseding an earlier, insufficient "make one side independent"
+// framing): this is a SAME-CODE/SAME-INPUT CANCELLATION SMOKE TEST, not
+// independent evidence of deterministic table algebra. table_a and
+// table_b are built by the IDENTICAL PowerSumTable::init on the IDENTICAL
+// id vector, so any deterministic wrong table implementation -- including
+// a no-op or a first-id-only accumulator -- produces two equal (wrong)
+// operands here and still cancels to zero. Supplying an independently
+// computed "expected zero" on one side would not help either (plan
+// review's own point): both tables are still the same deterministic code
+// on the same ids, so a shared algorithm defect survives that framing too.
+// What this test DOES catch: any NON-deterministic or state-dependent
+// divergence between two otherwise-identical table builds (e.g. an
+// uninitialized-memory bug, or corruption from unrelated global state) --
+// real value, just not the value TBL-4 used to be credited with.
+//
+// The finding TBL-4 cannot close on its own -- multi-ID-per-bucket
+// accumulation over the REAL production BucketOracle, checked against an
+// INDEPENDENTLY (brute-force, bucket-agnostic) computed expected syndrome
+// -- is closed by Task 25's test/gates/kat_multiid_bucket.cpp SC3/SC4
+// (`MultiIdBucketCollide.SC3_SC4_MultiplicityTwoThreeFourAndMixedSignRealTableRealMinorCircuit`):
+// four real ids pinned to a shared real bucket (R6-COLLIDE-PIN), pushed
+// through the production Update::apply -> PowerSumTable path at
+// multiplicities t in {2,3,4} plus a mixed-sign case, each row compared
+// against a syndrome computed independently of any bucket/table code at
+// all (this file's own TBL-1 "brute-force per-id power sums, sum by hand"
+// technique). THAT is the test that actually rules out a first/last-only
+// (or otherwise wrong) accumulator; TBL-4 below is retained only as a
+// cheap same-code cancellation smoke test.
+TEST(Table, TBL4_SyndromeCancellationAeqB_SameCodeSameInputSmokeTest) {
     Params params = Params::instantiate();
     const Encoder& enc = params.encoder;
     const BucketOracle& G = params.oracle;
