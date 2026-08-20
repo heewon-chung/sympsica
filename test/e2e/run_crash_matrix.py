@@ -23,6 +23,22 @@ post-fsync, pre-rename, post-rename}:
      after R's own eval_union networking has finished).
   5. R-INVCHK: R's on-disk state.bin bytes after the crash run must be
      EXACTLY ONE of {pre golden, post golden} -- never a third, torn value.
+  5b. task-28-brief.md PLAN-REVIEW REVISIONS R3: when outcome is POST, run
+      `crash_post_check` (apps/crash_post_check.cpp) BEFORE replay -- the
+      four scalar fields R-INVCHK's structural comparison uses (query_no,
+      J.size(), cache.size(), my_size) can all match a correct commit while
+      the cache key set, cache VALUES, t_share, or my_ids diverge (a
+      partial commit with the right SHAPE but wrong CONTENTS). This step
+      validates the COMPLETE semantic state instead: exact my_ids, the
+      table rebuilt under the restored oracle (via the real production
+      PartyState::check_against), the exact cache key set across both
+      parties, the reconstructed cache value for every key across the two
+      parties, t_share == sum(cache) reconstructed, and the expected
+      query_no. Runs before replay specifically because replay is
+      idempotent at this scale (crash_probe.cpp's own doc comment) and
+      would repair a partial commit, hiding exactly the defect this step
+      exists to catch. For a PRE outcome the existing bit-exact byte
+      comparison above already is sufficient; no semantic check needed.
   6. Recovery: BOTH parties re-run `--mode query` (crash env unset) against
      R's now-settled state dir. Per crash_probe.cpp's own doc comment, this
      is safe/idempotent at this tiny, always-full-path scale regardless of
@@ -164,9 +180,37 @@ def inspect_fields(bin_path: str, state_path: str) -> dict:
     return fields
 
 
+def run_post_check(check_bin: str, state_r: str, state_s: str, hook: str) -> None:
+    """task-28-brief.md PLAN-REVIEW REVISIONS R3: the semantic POST-state
+    checker (apps/crash_post_check.cpp), run BEFORE replay -- replay would
+    itself repair a partial commit (crash_probe.cpp's own idempotence
+    argument), which is exactly why R3 requires checking the state as
+    crashed, not after recovery has had a chance to paper over it.
+    Expected ids/query_no come from this driver's own fixed scenario
+    (R_BASE/S_BASE/R_EXTRA/S_EXTRA, TRUE_COUNT's own comment): q1 commits
+    query_no=1, the crash-run q2 (with R_EXTRA/S_EXTRA already inserted)
+    commits query_no=2 for both parties.
+    """
+    ids_r = ",".join(str(x) for x in (R_BASE + R_EXTRA))
+    ids_s = ",".join(str(x) for x in (S_BASE + S_EXTRA))
+    result = subprocess.run(
+        [check_bin, "--state-r", state_r, "--state-s", state_s, "--ids-r", ids_r, "--ids-s", ids_s,
+         "--expect-query-no", "2"],
+        capture_output=True, text=True)
+    print(f"[crash-matrix] hook={hook}: crash_post_check stdout:\n{result.stdout}")
+    if result.returncode != 0:
+        print(f"[crash-matrix] hook={hook}: crash_post_check stderr:\n{result.stderr}", file=sys.stderr)
+    assert result.returncode == 0, (
+        f"hook={hook}: R3 [POST-STATE-CHECK] FAILED -- crash_post_check rejected the recovered POST "
+        f"state (exit={result.returncode}); see stdout above for which specific check failed"
+    )
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run_crash_matrix.py")
     parser.add_argument("--probe-bin", required=True)
+    parser.add_argument("--check-bin", required=True,
+                         help="task-28-brief.md R3: apps/crash_post_check.cpp binary path")
     parser.add_argument("--workdir", default=None)
     parser.add_argument("--timeout-s", type=float, default=60.0)
     args = parser.parse_args(argv)
@@ -257,6 +301,21 @@ def main(argv: list[str]) -> int:
         outcome = "PRE" if matches_pre else "POST"
         print(f"[crash-matrix] hook={hook}: recovered state matches {outcome} golden (R-INVCHK OK) "
               f"fields={crashed_fields}")
+
+        # task-28-brief.md PLAN-REVIEW REVISIONS R3: for a PRE outcome the
+        # existing byte-exact comparison above (matches_pre) already IS a
+        # complete, sound check -- the crashed file is bit-identical to an
+        # untouched pre-query snapshot, nothing to add. For a POST outcome,
+        # the four-scalar structural match above is NOT sufficient evidence
+        # of a complete state (R3's whole point); run the real semantic
+        # checker here, BEFORE replay/recovery has a chance to repair
+        # anything.
+        if outcome == "POST":
+            run_post_check(args.check_bin, state_r, state_s, hook)
+            total_assertions += 1
+            print(f"[crash-matrix] hook={hook}: R3 [POST-STATE-CHECK] OK -- semantic POST state is "
+                  f"complete (my_ids, table under restored oracle, cache key set, reconstructed cache "
+                  f"values, t_share==sum(cache), query_no all verified)")
 
         # Recovery: redo q2 (crash env unset) -- safe/idempotent at this
         # scale regardless of PRE/POST outcome (crash_probe.cpp's own doc

@@ -170,6 +170,18 @@ option(SYMPSICA_WRONG_BOUNDARY "TEST-ONLY: SwitchRule::decide's boundary relaxed
 # build, not a persistent build-*/ dir (see task-20-report.md Fix round 1).
 option(SYMPSICA_DOUBLE_APPLY_COMMIT "TEST-ONLY: commit()'s incremental delta applied twice (M1 fix round 1 negative)" OFF)
 
+# task-28-brief.md PLAN-REVIEW REVISIONS R3 (R6-NOTAUTO demonstration): same
+# SYMPSICA_DOUBLE_APPLY_COMMIT precedent -- a TEST-ONLY flag, default OFF,
+# reproducing a deliberately PARTIAL commit inside commit()'s REPLACE branch
+# (src/protocols/query.cpp): every cache slot gets betas[0]'s share instead
+# of its own. query_no/J.size()/cache.size()/my_size all stay IDENTICAL to a
+# correct commit (this is exactly what makes it a partial-commit-that-
+# preserves-the-four-scalars demonstration), but the cache VALUES are wrong
+# and no longer sum to t_share. One-off local verification build (never a
+# persistent build-*/ dir, never part of the default build), same as
+# SYMPSICA_DOUBLE_APPLY_COMMIT.
+option(SYMPSICA_PARTIAL_CACHE_COMMIT "TEST-ONLY: commit()'s REPLACE branch writes one repeated share into every cache slot (R3 negative build)" OFF)
+
 option(SYMPSICA_BUILD_LIBOTE "Build vendored libOTe as a real CMake dependency" ON)
 if(SYMPSICA_BUILD_LIBOTE)
     # W0.3's SYMPSICA_SSE maps onto libOTe/cryptoTools's own ENABLE_SSE.
@@ -232,6 +244,9 @@ endif()
 if(SYMPSICA_DOUBLE_APPLY_COMMIT)
     target_compile_definitions(sympsica PRIVATE SYMPSICA_DOUBLE_APPLY_COMMIT)
 endif()
+if(SYMPSICA_PARTIAL_CACHE_COMMIT)
+    target_compile_definitions(sympsica PRIVATE SYMPSICA_PARTIAL_CACHE_COMMIT)
+endif()
 if(SYMPSICA_BUILD_LIBOTE)
     # `libOTe` is the actual target name add_subdirectory() defines (see
     # vendor/libOTe/libOTe/CMakeLists.txt — no `oc::` ALIAS exists outside
@@ -256,6 +271,14 @@ endif()
 if(EXISTS "${CMAKE_SOURCE_DIR}/apps/crash_probe.cpp")
     add_executable(crash_probe "${CMAKE_SOURCE_DIR}/apps/crash_probe.cpp")
     target_link_libraries(crash_probe PRIVATE sympsica)
+endif()
+
+# task-28-brief.md PLAN-REVIEW REVISIONS R3: the semantic POST-state
+# checker (see apps/crash_post_check.cpp's own top comment) -- read-only
+# introspection over PartyState, no networking, no protocol behavior.
+if(EXISTS "${CMAKE_SOURCE_DIR}/apps/crash_post_check.cpp")
+    add_executable(crash_post_check "${CMAKE_SOURCE_DIR}/apps/crash_post_check.cpp")
+    target_link_libraries(crash_post_check PRIVATE sympsica)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -506,12 +529,15 @@ endif()
 
 # ---------------------------------------------------------------------------
 # task-19-brief.md SC3 [CRASH-MATRIX]/R-CRASHDRV: the 5-point deterministic
-# crash matrix, driven by real subprocesses of `crash_probe`.
+# crash matrix, driven by real subprocesses of `crash_probe`. task-28-brief.md
+# PLAN-REVIEW REVISIONS R3 additionally wires `crash_post_check` (the
+# semantic POST-state checker) via --check-bin.
 # ---------------------------------------------------------------------------
-if(TARGET crash_probe)
+if(TARGET crash_probe AND TARGET crash_post_check)
     add_test(NAME e2e.CrashMatrixFivePoint
         COMMAND python3 "${CMAKE_SOURCE_DIR}/test/e2e/run_crash_matrix.py"
                 --probe-bin "$<TARGET_FILE:crash_probe>"
+                --check-bin "$<TARGET_FILE:crash_post_check>"
                 --workdir "${CMAKE_CURRENT_BINARY_DIR}/crash_matrix_workdir"
                 --timeout-s 60)
     set_tests_properties(e2e.CrashMatrixFivePoint PROPERTIES LABELS "heavy" TIMEOUT 180)

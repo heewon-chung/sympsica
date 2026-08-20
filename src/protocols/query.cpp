@@ -210,7 +210,24 @@ void commit(PartyState& st, const std::vector<u32>& betas, const std::vector<Sha
         Fp total(0);
         for (const Share& sh : new_shares) total = total.add(sh.v);
         st.cache.clear();
+#ifdef SYMPSICA_PARTIAL_CACHE_COMMIT
+        // task-28-brief.md PLAN-REVIEW REVISIONS R3 (R6-NOTAUTO): TEST-ONLY
+        // wrong construction -- every cache slot gets betas[0]'s share
+        // instead of its own. cache.size() is UNCHANGED (still
+        // betas.size() entries) and t_share below is still computed
+        // correctly from the REAL new_shares, so query_no/J.size()/
+        // cache.size()/my_size all still match a correct commit exactly --
+        // this is precisely "a partial commit that preserves the four
+        // current scalar fields" (task-28-brief.md R3's own required FC
+        // shape). NEVER defined in the default build (option defaults OFF,
+        // SYMPSICA_DOUBLE_APPLY_COMMIT precedent); exists only so
+        // apps/crash_post_check.cpp's reconstructed-cache/t_share check can
+        // be demonstrated failing against a REAL wrong value.
+        for (std::size_t i = 0; i < betas.size(); ++i)
+            st.cache[betas[i]] = new_shares.empty() ? Share{Fp(0)} : new_shares[0];
+#else
         for (std::size_t i = 0; i < betas.size(); ++i) st.cache[betas[i]] = new_shares[i];
+#endif
         st.t_share = Share{total};
     } else {
         Fp delta(0);
