@@ -293,6 +293,20 @@ runs through a FULL layer (`test/protocols_heavy/kat_golden_full.cpp`,
 with `Setup`-produced (OT/silent-VOLE) pools, asserting the opened count
 equals `golden_count`.
 
+**Limitation (R6-GOLDDOC, task-25-brief.md): these goldens are NOT evidence
+for multi-id rank recovery.** Every `golden_bucket` row above has
+`t_beta = 1`, and this is structural, not a probabilistic accident of the
+chosen parameters: in this fixture format each symmetric-difference id IS
+its own "virtual bucket" by construction (see this section's own field
+table above), so two distinct ids can never share one here, at any `n`.
+The only test in this codebase that exercises multiple real ids landing in
+the same real `BucketOracle` bucket -- accumulated through the production
+`PowerSumTable` and rank-recovered through the real `MinorCircuit`, end to
+end -- is `test/gates/kat_multiid_bucket.cpp` (task-25-brief.md), which
+uses a genuinely colliding id set found by
+`test/campaign/find_bucket_collision.cpp`. That is where the multi-id
+rank-recovery evidence lives.
+
 ## `overflow_planted.fixture` (task-21-brief.md W6.3, R6-OVFDEMO)
 
 Golden source: `ref/reference.py`'s `Ref.build_overflow_demo_data()` -- the
