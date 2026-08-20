@@ -184,3 +184,14 @@ negative exposed, and `SwitchRule::decide` is symmetric by construction
 (each side's announce bit is what the other side's `decide()` call
 consumes), so real parties disagreeing on path is always a protocol-level
 bug, never an expected wrong-construction effect.
+
+## Crash recovery scope (task-24-brief.md R6-I2-WAIVED)
+
+`test/e2e/run_crash_matrix.py`'s 5-point matrix (`e2e.CrashMatrixFivePoint`)
+proves SINGLE-PARTY atomicity and FULL-PATH replay recovery only — R's own
+`state.bin` is never torn across any of the 5 crash points, and a clean
+replay afterward recovers the correct count. Pair-level divergence under
+INCREMENTAL replay (recovery after a crash mid-incremental-query, across
+both parties, at production scale) is out of PoC scope — waived by the user
+as the Phase-5 gate's I2 finding; no recovery rule or additional digest term
+was added anywhere in this repo to cover it.

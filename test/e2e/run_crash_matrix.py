@@ -32,6 +32,14 @@ post-fsync, pre-rename, post-rename}:
 Assertions per hook: >= 3 (byte-match-one-of-two, R exit code 137, replay
 count correct) -- >= 15 total across all 5 hooks, comfortably over SC3's
 ">= 10 assertions minimum".
+
+Scope (task-24-brief.md R6-I2-WAIVED, docs-only, zero behavior change): this
+matrix proves SINGLE-PARTY atomicity (R's own state.bin is never torn) and
+FULL-PATH replay recovery only, both at the always-full-path scale crash_
+probe.cpp runs at. Pair-level divergence under INCREMENTAL replay (recovery
+after a crash mid-incremental-query, across both parties, at production
+scale) is out of PoC scope -- waived by the user as the Phase-5 gate's I2
+finding, not attempted anywhere in this repo.
 """
 
 from __future__ import annotations
