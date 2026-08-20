@@ -1,6 +1,7 @@
 #ifndef SYMPSICA_CORE_STATE_HPP
 #define SYMPSICA_CORE_STATE_HPP
 
+#include <array>
 #include <set>
 #include <span>
 #include <string>
@@ -55,6 +56,33 @@ struct PartyState {
     // predates this change in practice.
     u64 query_no = 0;
 
+    // oracle_salt — task-26-brief.md R6-N2 fix (plan-review-tasks-25-28.md
+    // R3, BINDING over the brief's earlier "salt epoch" language): the
+    // BucketOracle::salt() this party's `table`/`cache` were actually built
+    // under. NOT a reconstructible numeric epoch -- SaltManager::refresh
+    // derives the new oracle from BOTH parties' fresh contributions
+    // (BucketOracle::refreshed(r_R, r_S), salt.cpp), and a restarting party
+    // does not possess the peer's old contribution, so a counter cannot
+    // recover the oracle after the fact. The 32-byte salt itself is the
+    // only durable material that can. Defaults to all-zero (epoch 0),
+    // matching a fresh Params::instantiate()'s default BucketOracle().
+    // Additive save()/load() format extension, same R-QNO precedent
+    // (Phase-3-owned file, authorized); pre-this-change state files are
+    // truncated here and correctly abort on load() rather than silently
+    // defaulting to zero from missing bytes -- same documented
+    // incompatibility query_no's own addition already established.
+    //
+    // Bug this fixes (N2): SaltManager::refresh installs a new
+    // params.oracle and rebuilds `table` under it but, pre-fix, saved only
+    // the fields above -- no salt/oracle field existed here at all. A
+    // restarting process (apps/party_main.cpp) always constructed epoch-0
+    // Params BEFORE loading state, so a state file committed after a
+    // maintenance day reloaded with a table built under the fresh salt
+    // while every subsequent Update::apply/Query::run bucketed under
+    // epoch-0 -- silently wrong, no abort. See require_salt_match() below,
+    // the guard this field makes possible.
+    std::array<u8, 32> oracle_salt{};
+
     // save(path): serializes every field to `path + ".tmp"`, fsyncs it, then
     // std::rename()s it over `path` -- the atomic-commit substrate FT6
     // relies on (plan W3.3). R4: every field goes through utils/serdes
@@ -80,6 +108,23 @@ struct PartyState {
     // Python reference happens in Task 11's tests via fixtures, not here.
     bool check_against(std::span<const u64> expected_ids, const Encoder& enc,
                         const BucketOracle& G) const;
+
+    // require_salt_match(G) — task-26-brief.md R6-N2 production guard
+    // (plan-review-tasks-25-28.md R3): SYMPSICA_REQUIRE-aborts unless
+    // `oracle_salt` matches `G.salt()` byte-for-byte. Call sites (ALL
+    // real production entry points, not a check tucked away where a
+    // future caller could bypass it -- R3's explicit requirement):
+    // Update::apply (update.cpp), Query::run's every path (query.cpp,
+    // covers both the ordinary caller and SaltManager::refresh's own
+    // internal forced-full call, since by the time refresh() reaches that
+    // call it has already updated st.oracle_salt/params.oracle together),
+    // and SaltManager::refresh's own ENTRY point (salt.cpp, BEFORE it
+    // derives the new oracle -- checks against the OLD salt this party's
+    // CURRENT table/cache were built under). A mismatch means a caller is
+    // about to bucket ids under a DIFFERENT oracle than the one the
+    // party's stored table reflects -- exactly N2's silent-corruption
+    // failure mode.
+    void require_salt_match(const BucketOracle& G) const;
 };
 
 } // namespace sympsica

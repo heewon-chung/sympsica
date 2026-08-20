@@ -346,6 +346,68 @@ TEST(Salt, ScheduleSyncAgreeingMarkersSucceed) {
 // what breaks when they don't.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// FC3 [N2 guard] (task-26-brief.md R6-N2, plan-review-tasks-25-28.md R3): a
+// REAL production entry point -- SaltManager::refresh -- aborts when handed
+// a PartyState whose oracle_salt disagrees with params.oracle. This is NOT
+// a standalone helper tested in isolation (R3's explicit warning): refresh()
+// is the exact call party_main invokes on every maintenance day, and the
+// guard fires at its ENTRY, before it samples this party's own contribution
+// or touches the channel at all -- catching a caller that handed it an
+// already-desynced PartyState/Params pair (e.g. a restart that skipped the
+// load-then-construct ordering party_main now follows).
+// ---------------------------------------------------------------------------
+
+TEST(Salt, FC3_RefreshAbortsOnSaltMismatch) {
+    ::testing::GTEST_FLAG(death_test_style) = "threadsafe";
+
+    Params params_r = Params::instantiate(); // oracle salt = all-zero, epoch 0
+    PartyState st_r;
+    st_r.my_ids = {1, 2, 3};
+    st_r.table.init(st_r.my_ids, params_r.encoder, params_r.oracle);
+    st_r.my_size = st_r.my_ids.size();
+    // Deliberately mismatched (R6-NOTAUTO: this is the "deliberately wrong
+    // input" -- everything else in this test is a normal, matched setup):
+    // st_r's table above was built under params_r.oracle (all-zero), but
+    // oracle_salt claims a DIFFERENT salt.
+    st_r.oracle_salt.fill(0xAB);
+
+    Params params_s = Params::instantiate();
+    PartyState st_s;
+    st_s.my_ids = {2, 3, 4};
+    st_s.table.init(st_s.my_ids, params_s.encoder, params_s.oracle);
+    st_s.my_size = st_s.my_ids.size();
+
+    Pools pool_r, pool_s;
+    run_two_party(
+        next_address(),
+        [&](Channel& ch) { pool_r = Setup::run(Role::Receiver, ch, params_r, kSaltSizes); },
+        [&](Channel& ch) { pool_s = Setup::run(Role::Sender, ch, params_s, kSaltSizes); });
+
+    const std::string path_r = scratch_path("fc3_r.bin");
+    const std::string path_s = scratch_path("fc3_s.bin");
+    clear_path(path_r);
+    clear_path(path_s);
+
+    EXPECT_DEATH(
+        {
+            run_two_party(
+                next_address(),
+                [&](Channel& ch) {
+                    (void)SaltManager::refresh(Role::Receiver, st_r, params_r, pool_r, ch, path_r,
+                                                /*seed=*/555);
+                },
+                [&](Channel& ch) {
+                    (void)SaltManager::refresh(Role::Sender, st_s, params_s, pool_s, ch, path_s,
+                                                /*seed=*/666);
+                });
+        },
+        "oracle_salt");
+
+    clear_path(path_r);
+    clear_path(path_s);
+}
+
 TEST(Salt, FC4_WrongOrderingDivergesOracles) {
     std::array<u8, 32> r_receiver{}, r_sender{};
     for (int i = 0; i < 32; ++i) {

@@ -64,9 +64,10 @@ void PartyState::save(const std::string& path) const {
     const u64 cache_bytes = 8 + sorted_cache.size() * (4 + 8);
     const u64 t_share_bytes = 8;
     const u64 my_size_bytes = 8;
-    const u64 query_no_bytes = 8; // R-QNO: additive tail field.
+    const u64 query_no_bytes = 8;      // R-QNO: additive tail field.
+    const u64 oracle_salt_bytes = 32;  // R6-N2: additive tail field, same precedent.
     const u64 total = my_ids_bytes + table_bytes + j_bytes + cache_bytes +
-                       t_share_bytes + my_size_bytes + query_no_bytes;
+                       t_share_bytes + my_size_bytes + query_no_bytes + oracle_salt_bytes;
 
     std::vector<u8> buf(total);
     u8* p = buf.data();
@@ -109,6 +110,15 @@ void PartyState::save(const std::string& path) const {
 
     write_u64_le(p, query_no); // R-QNO: additive tail field.
     p += 8;
+
+    // R6-N2: additive tail field, same R-QNO precedent -- the salt this
+    // party's table/cache above were actually built under, serialized in
+    // this SAME atomic save() (R3: "atomically with the table/cache
+    // state" -- satisfied by construction, since it's one field of one
+    // struct written into one buffer that save()'s rename below commits
+    // as a single atomic unit).
+    for (std::size_t i = 0; i < oracle_salt.size(); ++i) p[i] = oracle_salt[i];
+    p += oracle_salt.size();
 
     SYMPSICA_REQUIRE(static_cast<u64>(p - buf.data()) == total,
                       "PartyState::save: buffer size mismatch (internal bug)");
@@ -216,6 +226,15 @@ void PartyState::load(const std::string& path) {
     SYMPSICA_REQUIRE(rest.size() >= 8, "PartyState::load: truncated (query_no)");
     query_no = read_u64_le(rest.data());
     rest = rest.subspan(8);
+
+    // R6-N2: additive tail field -- a pre-this-change state file (written
+    // before oracle_salt existed) is truncated here and correctly aborts
+    // rather than silently defaulting oracle_salt to all-zero from
+    // missing/garbage bytes (same documented incompatibility R-QNO's own
+    // query_no addition established; task-26-report.md).
+    SYMPSICA_REQUIRE(rest.size() >= 32, "PartyState::load: truncated (oracle_salt)");
+    for (std::size_t i = 0; i < oracle_salt.size(); ++i) oracle_salt[i] = rest[i];
+    rest = rest.subspan(32);
 }
 
 bool PartyState::check_against(std::span<const u64> expected_ids, const Encoder& enc,
@@ -239,6 +258,14 @@ bool PartyState::check_against(std::span<const u64> expected_ids, const Encoder&
         if (expected.row(beta) != table.row(beta)) return false;
     }
     return true;
+}
+
+void PartyState::require_salt_match(const BucketOracle& G) const {
+    SYMPSICA_REQUIRE(oracle_salt == G.salt(),
+                      "PartyState::require_salt_match: oracle_salt mismatch -- this party's "
+                      "table/cache were built under a DIFFERENT salt than the BucketOracle in "
+                      "use (task-26-brief.md N2: a restart after maintenance must never silently "
+                      "mix two bucket oracles)");
 }
 
 } // namespace sympsica

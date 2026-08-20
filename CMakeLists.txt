@@ -588,3 +588,26 @@ if(TARGET party)
                 --workdir "${CMAKE_CURRENT_BINARY_DIR}/cga_gate_workdir")
     set_tests_properties(e2e.CGAZeroCommunicationUpdate PROPERTIES TIMEOUT 120)
 endif()
+
+# ---------------------------------------------------------------------------
+# task-26-brief.md SC4 [N2-E2E] (plan-review-tasks-25-28.md R3): a REAL
+# two-OS-process schedule split at a successfully COMMITTED maintenance
+# query, both processes terminated cleanly, then RESTARTED from both state
+# files -- the exact scenario N2 breaks (a restart after maintenance
+# silently bucketing under the wrong salt). NOT a gtest binary
+# (test/e2e/run_restart_gate.py is plain python3, stdlib only) -- same
+# native-add_test-running-python3 idiom as every other E2E driver above.
+# Deliberately named outside the `^e2e\.SmokeTwoProcess$`/heavy-labeled set
+# (R6-TIERS, TEST-TIERS.md): small/fast (two short phases, well under
+# 2*u_max combined ids) but still a real two-process restart, so it belongs
+# in T3 alongside the other e2e.* tests, not T1/T2.
+# ---------------------------------------------------------------------------
+if(TARGET party)
+    add_test(NAME e2e.RestartAfterMaintenance
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/test/e2e/run_restart_gate.py"
+                --party-bin "$<TARGET_FILE:party>"
+                --reference "${CMAKE_SOURCE_DIR}/ref/reference.py"
+                --workdir "${CMAKE_CURRENT_BINARY_DIR}/restart_gate_workdir"
+                --timeout-s 60)
+    set_tests_properties(e2e.RestartAfterMaintenance PROPERTIES TIMEOUT 150)
+endif()

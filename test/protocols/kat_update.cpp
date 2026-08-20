@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <set>
 #include <string>
 #include <vector>
@@ -337,4 +338,45 @@ TEST(Update, ScheduleReplay_QueryEpochSizesMatchReferencePy) {
         }
         EXPECT_EQ(qi, query_count);
     }
+}
+
+// ---------------------------------------------------------------------------
+// N2 guard (task-26-brief.md R6-N2, plan-review-tasks-25-28.md R3): a REAL
+// production entry point -- Update::apply -- aborts when handed a
+// PartyState whose oracle_salt disagrees with the BucketOracle it is about
+// to bucket ids under. Every edit in Update::apply buckets via G
+// (table.edit(x, +-1, enc, G), J.insert(G.of(x))); a mismatch here means an
+// insert/delete would silently land in the wrong bucket -- N2's failure
+// mode, reachable from ordinary Update::apply calls, not just
+// SaltManager::refresh/Query::run (see test/protocols/kat_salt.cpp's own
+// FC3 for that entry point).
+// ---------------------------------------------------------------------------
+TEST(UpdateDeathTest, N2GuardAbortsOnSaltMismatch) {
+    Params params = Params::instantiate(); // G.salt() = all-zero, epoch 0
+    PartyState st;
+    st.my_ids = {1, 2, 3};
+    st.table.init(st.my_ids, params.encoder, params.oracle);
+    st.my_size = st.my_ids.size();
+    // Deliberately mismatched (R6-NOTAUTO): st.table above was built under
+    // params.oracle (all-zero), but oracle_salt claims a different salt.
+    st.oracle_salt.fill(0x7F);
+
+    EXPECT_DEATH(
+        { Update::apply(st, std::vector<u64>{99}, std::vector<u64>{}, params.encoder, params.oracle); },
+        "oracle_salt");
+}
+
+// Positive companion (not a named SC/FC, but pins that a MATCHING salt does
+// NOT abort -- otherwise the negative above would be vacuous, always dying
+// for some unrelated reason).
+TEST(Update, N2GuardMatchingSaltDoesNotAbort) {
+    Params params = Params::instantiate();
+    PartyState st;
+    st.my_ids = {1, 2, 3};
+    st.table.init(st.my_ids, params.encoder, params.oracle);
+    st.my_size = st.my_ids.size();
+    // st.oracle_salt left at its default (all-zero), matching params.oracle.
+
+    EXPECT_NO_FATAL_FAILURE(
+        Update::apply(st, std::vector<u64>{99}, std::vector<u64>{}, params.encoder, params.oracle));
 }

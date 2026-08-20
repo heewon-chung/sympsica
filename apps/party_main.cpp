@@ -489,31 +489,45 @@ std::string audit_json(const Pools& pools) {
 
 int main(int argc, char** argv) {
     Config cfg = parse_args(argc, argv);
-    Params params = Params::instantiate();
-
-    // stderr config echo (W5.7): Params::echo() + the effective CLI flags
-    // as one JSON line.
-    params.echo(std::cerr);
-    std::cerr << config_json(cfg) << "\n";
-    std::cerr.flush();
 
     const Role role = cfg.role_char == 'r' ? Role::Receiver : Role::Sender;
 
     std::filesystem::create_directories(cfg.state_dir);
     const std::string state_path = (std::filesystem::path(cfg.state_dir) / "state.bin").string();
 
+    // R6-N2 (task-26-brief.md, plan-review R3): load state BEFORE
+    // constructing Params, and construct Params.oracle FROM the loaded
+    // state's persisted salt -- never unconditionally epoch-0. Order
+    // matters: a state file committed after a maintenance day carries a
+    // table/cache built under the FRESH salt; constructing Params first
+    // (the pre-fix order) always started at epoch 0 regardless, so every
+    // Update::apply/Query::run after a restart silently bucketed under the
+    // wrong oracle (N2). This block must run before ANY Update/Setup/Query
+    // use of `params`.
     PartyState st;
     if (std::filesystem::exists(state_path)) {
         st.load(state_path);
     } else {
         // Fresh party: explicit zero-init beyond PartyState's own in-class
-        // defaults (my_size/query_no already default to 0) -- st.t_share is
-        // otherwise indeterminate until the first committed query's REPLACE
-        // semantics overwrite it (harmless in practice, since query_no==0
-        // always forces SwitchRule::decide's firstQuery branch, but
-        // explicit is cheaper than reasoning about it).
+        // defaults (my_size/query_no/oracle_salt already default to 0) --
+        // st.t_share is otherwise indeterminate until the first committed
+        // query's REPLACE semantics overwrite it (harmless in practice,
+        // since query_no==0 always forces SwitchRule::decide's firstQuery
+        // branch, but explicit is cheaper than reasoning about it).
         st.t_share = Share{Fp(0)};
     }
+
+    Params params = Params::instantiate();
+    params.oracle = BucketOracle(st.oracle_salt); // R6-N2: restore the persisted salt, not epoch 0
+
+    // stderr config echo (W5.7): Params::echo() + the effective CLI flags
+    // as one JSON line. Params::echo() prints salt() -- on a reload this
+    // now shows the RESTORED salt (all-zero only for a genuinely fresh
+    // party), which is itself a check (task-26-brief.md's revised N2
+    // instructions: "the echo must show the restored salt, not zeros").
+    params.echo(std::cerr);
+    std::cerr << config_json(cfg) << "\n";
+    std::cerr.flush();
 
     const std::vector<ScheduleDay> schedule = parse_schedule(read_file(cfg.schedule_path));
 

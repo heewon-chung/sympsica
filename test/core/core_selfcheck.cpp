@@ -6,8 +6,11 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -100,7 +103,18 @@ TEST(CoreSelfCheck, DefaultConstructedPartyState_TShareReadsCanonicalZero) {
 TEST(CoreSelfCheck, SaveLoadRoundTrip) {
     Params params = Params::instantiate();
     const Encoder& enc = params.encoder;
-    const BucketOracle& G = params.oracle;
+
+    // task-26-brief.md R6-N2 (SC3 [N2-PERSIST]): oracle_salt is a REAL,
+    // NON-ZERO refreshed salt here, not Params::instantiate()'s all-zero
+    // epoch-0 default -- a field that was silently never written/read
+    // would also happen to read back as all-zero, so a zero-in/zero-out
+    // round trip would not actually prove the new field is wired up.
+    std::array<u8, 32> r_r{}, r_s{};
+    for (int i = 0; i < 32; ++i) {
+        r_r[static_cast<std::size_t>(i)] = static_cast<u8>(i + 1);
+        r_s[static_cast<std::size_t>(i)] = static_cast<u8>(200 + i);
+    }
+    const BucketOracle G = BucketOracle::refreshed(r_r, r_s);
 
     PartyState st;
     st.my_ids = {1, 2, 3, 1000000};
@@ -110,6 +124,7 @@ TEST(CoreSelfCheck, SaveLoadRoundTrip) {
     st.cache[G.of(2)] = Share{Fp(222)};
     st.t_share = Share{Fp(999)};
     st.my_size = 4;
+    st.oracle_salt = G.salt();
 
     std::string path = scratch_path("state.bin");
     std::remove(path.c_str());
@@ -129,9 +144,65 @@ TEST(CoreSelfCheck, SaveLoadRoundTrip) {
     }
     EXPECT_EQ(loaded.t_share, st.t_share);
     EXPECT_EQ(loaded.my_size, st.my_size);
+
+    // SC3 [N2-PERSIST]: the loaded oracle_salt matches what was saved, AND
+    // is the non-zero refreshed salt above (not vacuously all-zero).
+    EXPECT_EQ(loaded.oracle_salt, st.oracle_salt);
+    EXPECT_NE(loaded.oracle_salt, (std::array<u8, 32>{}));
     EXPECT_TRUE(loaded.check_against(st.my_ids, enc, G));
 
+    // SC3 [N2-PERSIST]: reserialize the LOADED state and compare BYTES --
+    // a genuinely bit-identical round trip (save -> load -> save), not
+    // just field-by-field C++ equality (which could mask a save()/load()
+    // asymmetry that still individually "passes" the checks above).
+    std::string path2 = scratch_path("state_reserialized.bin");
+    std::remove(path2.c_str());
+    std::remove((path2 + ".tmp").c_str());
+    loaded.save(path2);
+    std::ifstream f1(path, std::ios::binary);
+    std::ifstream f2(path2, std::ios::binary);
+    ASSERT_TRUE(f1.is_open());
+    ASSERT_TRUE(f2.is_open());
+    std::vector<char> bytes1((std::istreambuf_iterator<char>(f1)), std::istreambuf_iterator<char>());
+    std::vector<char> bytes2((std::istreambuf_iterator<char>(f2)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(bytes1, bytes2) << "SC3: save() -> load() -> save() must be byte-identical";
+
+    // SC3 [N2-PERSIST]: PartyState::check_against(st.my_ids, params.encoder,
+    // params.oracle) with the oracle reconstructed FROM the LOADED state's
+    // own salt (BucketOracle(loaded.oracle_salt)) -- the actual guarantee
+    // N2's fix must provide: the restored oracle really does match the
+    // persisted table, not merely that the salt bytes round-trip.
+    BucketOracle restored_oracle(loaded.oracle_salt);
+    EXPECT_TRUE(loaded.check_against(st.my_ids, enc, restored_oracle));
+
     std::remove(path.c_str());
+    std::remove(path2.c_str());
+}
+
+// --- PartyState::require_salt_match: unit-level sanity on the helper
+// itself (task-26-brief.md R6-N2). NOT a substitute for FC3
+// (test/protocols/kat_salt.cpp's SaltManager::refresh guard test) --
+// plan-review-tasks-25-28.md R3 is explicit that a standalone helper test
+// like this one, in isolation, would be tautological as a NEGATIVE-test
+// completion claim; this is a cheap positive/negative sanity pair on the
+// comparison logic itself, kept alongside the state round-trip tests
+// above since it's a PartyState method, same as check_against's own
+// coverage in this file. ---------------------------------------------------
+TEST(CoreSelfCheckDeathTest, RequireSaltMatch_MismatchAborts) {
+    PartyState st; // oracle_salt defaults all-zero
+    std::array<u8, 32> other{};
+    other[0] = 1;
+    BucketOracle G(other);
+    EXPECT_DEATH({ st.require_salt_match(G); }, "oracle_salt");
+}
+
+TEST(CoreSelfCheck, RequireSaltMatch_MatchDoesNotAbort) {
+    PartyState st;   // oracle_salt defaults all-zero
+    BucketOracle G;  // also all-zero, epoch 0 -- must NOT be vacuously true
+                      // for every possible G: RequireSaltMatch_MismatchAborts
+                      // above is the non-vacuity proof that a DIFFERENT G
+                      // does abort.
+    EXPECT_NO_FATAL_FAILURE(st.require_salt_match(G));
 }
 
 // --- TriplePool: take() / take_by_id() double-consume aborts ---------------

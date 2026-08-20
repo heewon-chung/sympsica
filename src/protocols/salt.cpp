@@ -86,6 +86,17 @@ bool SaltManager::due(u64 query_no, u64 phi, bool maintenance_day, bool force) {
 
 Share SaltManager::refresh(Role role, PartyState& st, Params& params, Pools& pools, Channel& ch,
                             const std::string& state_path, u64 seed) {
+    // R6-N2 guard (task-26-brief.md, plan-review R3): ENTRY-point check,
+    // BEFORE this party's own contribution is even sampled -- st.oracle_salt
+    // must still match the OLD oracle this party's CURRENT table/cache were
+    // built under. Checking here, before params.oracle is overwritten
+    // below, is what makes the guard load-bearing: it catches a caller that
+    // handed refresh() an already-desynced PartyState/Params pair (e.g. a
+    // restart that skipped party_main's load-then-construct ordering)
+    // rather than checking a value this same function is about to
+    // overwrite anyway.
+    st.require_salt_match(params.oracle);
+
     const std::array<u8, 32> mine =
         sample_salt_contribution(seed, role == Role::Receiver ? "saltR" : "saltS", st.query_no);
     std::array<u8, 32> theirs{};
@@ -98,6 +109,7 @@ Share SaltManager::refresh(Role role, PartyState& st, Params& params, Pools& poo
     const std::array<u8, 32>& r_S = (role == Role::Receiver) ? theirs : mine;
 
     params.oracle = BucketOracle::refreshed(r_R, r_S);
+    st.oracle_salt = params.oracle.salt(); // R6-N2: updated TOGETHER with params.oracle
     st.table.rebuild(st.my_ids, params.encoder, params.oracle);
 
     // R-FORCEFULL: the unified maintenance event -- immediately run

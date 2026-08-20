@@ -375,6 +375,67 @@ TEST(Query, QRY1_ConcreteFullPathReconstructsIntersectionSize) {
 }
 
 // ---------------------------------------------------------------------------
+// N2 guard (task-26-brief.md R6-N2, plan-review-tasks-25-28.md R3): a REAL
+// production entry point -- Query::run -- aborts when handed a PartyState
+// whose oracle_salt disagrees with params.oracle. st.table/st.J were built
+// under whatever oracle was active at Update::apply/SaltManager::refresh
+// time; Query::run itself never recomputes G.of(id), so this guard is the
+// one check that catches a caller reading precomputed rows under the WRONG
+// assumed oracle (a stale reload) before the query answers with silently-
+// wrong buckets. threadsafe death-test style (kat_salt.cpp's own FC1/FC3
+// precedent): this binary opens real coproto/asio Channels whose background
+// threads can still be alive at the point a later TEST() runs, so gtest's
+// default fork-based death-test style is unsafe here.
+// ---------------------------------------------------------------------------
+
+TEST(Query, N2GuardAbortsOnSaltMismatch) {
+    ::testing::GTEST_FLAG(death_test_style) = "threadsafe";
+
+    Params params = Params::instantiate(); // oracle salt = all-zero, epoch 0
+    const std::vector<u64> A = {1, 2, 3};
+    const std::vector<u64> B = {2, 3, 4};
+
+    PartyState st_r, st_s;
+    st_r.my_ids = A;
+    st_r.table.init(A, params.encoder, params.oracle);
+    st_r.my_size = A.size();
+    // Deliberately mismatched (R6-NOTAUTO): st_r's table above was built
+    // under params.oracle (all-zero), but oracle_salt claims a different
+    // salt.
+    st_r.oracle_salt.fill(0x5A);
+    st_s.my_ids = B;
+    st_s.table.init(B, params.encoder, params.oracle);
+    st_s.my_size = B.size();
+
+    Pools pool_r, pool_s;
+    run_two_party(
+        next_address(),
+        [&](Channel& ch) { pool_r = Setup::run(Role::Receiver, ch, params, kTinySizes); },
+        [&](Channel& ch) { pool_s = Setup::run(Role::Sender, ch, params, kTinySizes); });
+
+    const std::string path_r = scratch_path("n2guard_r.bin");
+    const std::string path_s = scratch_path("n2guard_s.bin");
+    clear_path(path_r);
+    clear_path(path_s);
+
+    EXPECT_DEATH(
+        {
+            run_two_party(
+                next_address(),
+                [&](Channel& ch) {
+                    (void)Query::run(Role::Receiver, st_r, pool_r, ch, params, path_r, /*seed=*/7001);
+                },
+                [&](Channel& ch) {
+                    (void)Query::run(Role::Sender, st_s, pool_s, ch, params, path_s, /*seed=*/7002);
+                });
+        },
+        "oracle_salt");
+
+    clear_path(path_r);
+    clear_path(path_s);
+}
+
+// ---------------------------------------------------------------------------
 // FC1 [TV-F9]: applying the RECEIVER-form conversion on BOTH parties (a
 // test-side wrong computation) reconstructs a count that differs from the
 // true value -- demonstrating that the Sender's own -inv2*t_S form (not a

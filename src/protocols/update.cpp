@@ -27,6 +27,15 @@ std::vector<u64> dedup(std::span<const u64> v) {
 
 void Update::apply(PartyState& st, std::span<const u64> I, std::span<const u64> D,
                     const Encoder& enc, const BucketOracle& G) {
+    // R6-N2 guard (task-26-brief.md, plan-review R3): every edit below
+    // buckets ids via `G` (table.edit(x, +-1, enc, G), J.insert(G.of(x))).
+    // If `G` disagrees with the salt st.table was actually built under, an
+    // insert/delete here silently edits the WRONG bucket instead of
+    // cancelling/extending the row a later query will read -- N2's exact
+    // failure mode, reachable from ordinary Update::apply calls, not just
+    // SaltManager::refresh/Query::run.
+    st.require_salt_match(G);
+
     // =========================================================================
     // STEP 1 FILTER -- three stages, in this order (fix round 1, controller
     // ruling, binding):

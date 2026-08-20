@@ -427,7 +427,21 @@ SwitchRule::Path SwitchRule::decide(const Params& pp, u64 nA, u64 nB, u64 myJ, b
 Share Query::run(Role role, PartyState& st, Pools& pools, Channel& ch, const Params& params,
                   const std::string& state_path, u64 seed, bool force_full,
                   SwitchRule::Path* path_out) {
-    (void)params;
+    // R6-N2 guard (task-26-brief.md, plan-review R3): `params` was
+    // otherwise unused in this function (hence the `(void)params;` this
+    // replaces) -- st.table/st.J were already built under whatever oracle
+    // was in effect at Update::apply/SaltManager::refresh time, and this
+    // function only exchanges/evaluates those precomputed rows, never
+    // recomputing G.of(id) itself. That is exactly why the guard belongs
+    // here too: it is the one check that confirms the oracle a caller
+    // THINKS is current (params.oracle) actually matches the one st's
+    // stored rows were built under, catching a stale reload before this
+    // query answers with silently-wrong buckets. Covers BOTH the ordinary
+    // caller AND SaltManager::refresh's own internal forced-full call
+    // (by the time refresh() reaches that call it has already updated
+    // st.oracle_salt/params.oracle together, so this passes trivially
+    // there).
+    st.require_salt_match(params.oracle);
     const bool first_query = (st.query_no == 0);
     const bool my_announce = (st.J.size() > Params::U_MAX);
 
