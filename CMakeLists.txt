@@ -271,6 +271,24 @@ endif()
 # (nonzero exit) instead of a silently-green no-op. This is what makes
 # `ctest -R integration` fail loudly today (no integration tests exist yet)
 # instead of reporting false success.
+#
+# task-27-brief.md Important #4/codex/phase-2-review.md, CORRECTED SELECTOR:
+# `ctest -R integration` alone is NOT the right gate from Phase 2 onward.
+# test/gates/*.cpp registers under the SEPARATE `gates.` prefix below (see
+# `sympsica_add_test_target(gates gates)`), so `-R integration` cannot
+# observe the libOTe-vs-oracle / Google-DPF-vs-oracle cross-checks (W2.3,
+# ZT-4/TV-F2) that live there -- a broken cross-check there would leave
+# `ctest -R integration --no-tests=error` green. The gate of record for any
+# phase that includes Phase-2-or-later deliverables is:
+#
+#     ctest -R 'integration|gates' --no-tests=error
+#
+# and even that selector cannot observe test/gates/oracle_dpf/google_dpf/
+# oracle_check.cc, a Bazel-only `.cc` target (see the GLOB_RECURSE comment
+# below) excluded from CMake/ctest entirely -- it must be run separately via
+# bazelisk (see task-7-report.md for the exact invocation) and its result
+# recorded alongside the ctest run as part of the same gate/phase verdict,
+# not as merely supplementary evidence.
 # ---------------------------------------------------------------------------
 enable_testing()
 include(GoogleTest)
