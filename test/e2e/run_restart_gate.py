@@ -236,6 +236,17 @@ def main(argv: list[str]) -> int:
         f"{records_r1[0]['path']!r} -- SC4 needs a genuinely COMMITTED maintenance query to restart "
         f"after"
     )
+    # task-28-brief.md carried finding C2 (Task 26 review): query_no after
+    # the FIRST committed query is always exactly 1 (party_main.cpp's
+    # jsonl_record fires AFTER Query::run's/SaltManager::refresh's atomic
+    # commit, and commit() increments query_no exactly once per committed
+    # query -- src/protocols/query.cpp's detail::commit()). Pinning this
+    # here is what makes the phase-2 query_no check below a real
+    # discriminator rather than an assumption.
+    assert records_r1[0]["query_no"] == 1, (
+        f"test precondition: phase1's committed query_no must be exactly 1 (first-ever query), got "
+        f"{records_r1[0]['query_no']}"
+    )
     assert records_r1[0]["count"] == records_s1[0]["count"] == EXPECTED_COUNTS[0], (
         f"phase1 (pre-restart) count mismatch: receiver={records_r1[0]['count']} "
         f"sender={records_s1[0]['count']} expected={EXPECTED_COUNTS[0]}"
@@ -264,6 +275,24 @@ def main(argv: list[str]) -> int:
         f"test precondition: phase2's query day must NOT be maintenance -- got "
         f"{records_r2[0]['path']!r}; a spurious re-trigger would mean query_no didn't restore "
         f"correctly either, a separate bug this driver isn't targeting"
+    )
+    # task-28-brief.md carried finding C2 (Task 26 review): `path !=
+    # "maintenance_full"` alone does NOT establish query_no was restored --
+    # a query_no lost to 0 on restart also yields firstQuery (`query_no ==
+    # 0`), which ALSO takes the non-maintenance "full_public" path
+    # (SwitchRule::decide's own `firstQuery || ...` branch), so the check
+    # above would pass even under N2's exact bug. Directly observe the
+    # restored query_no instead: day 4 is the party's SECOND-EVER committed
+    # query, so a correctly-restored query_no must read back as exactly 2
+    # (phase1's day2 committed 1, per the precondition pinned above) -- a
+    # lost/reset query_no would instead commit day 4 as query_no=1, exactly
+    # matching phase1's day2 value and indistinguishable from "restart threw
+    # query_no away".
+    assert records_r2[0]["query_no"] == 2, (
+        f"SC4 [N2-E2E, C2] FAILED: phase2's committed query_no is "
+        f"{records_r2[0]['query_no']}, expected 2 -- a value of 1 here means query_no was NOT "
+        f"restored across the restart (day 4 was treated as this process's first-ever query, "
+        f"exactly N2's failure signature for query_no)"
     )
 
     # --- SC4 [N2-E2E]: the actual assertion this whole driver exists for.
