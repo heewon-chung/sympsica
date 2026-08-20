@@ -106,16 +106,31 @@ to include it once the real fix landed.
 
 **The fix**: `run_full()` now filters `occupied` to buckets whose row is
 NON-ZERO, matching `table.hpp`'s own `row()` contract (an absent row and
-an all-zero row are already treated identically everywhere else). This
-filter is EXACT, not a heuristic, for any bucket occupancy up to
-`Params::K = 7` (a row only ever stores `K` power sums): by Newton's
-identities, an all-zero power-sum vector forces every elementary symmetric
-polynomial of the bucket's `sigma`-values to vanish too, which forces the
-bucket's characteristic polynomial to `X^t` — i.e. every `sigma(x_i) = 0`,
-impossible since `sigma(x) = g^x` is never `0` in `F_p^*`. So "row is
-all-zero" `<=>` "bucket holds nothing", unconditionally. See
-`src/protocols/query.cpp`'s own comment at the fix site (`run_full`) for
-the full argument, and `test/protocols/kat_query.cpp`'s
+an all-zero row are already treated identically everywhere else). By
+Newton's identities, an all-zero power-sum vector `p_1..p_t` (`t <= 7`)
+forces every elementary symmetric polynomial of the bucket's `sigma`-values
+to vanish too, which forces the bucket's characteristic polynomial to
+`X^t` — i.e. every `sigma(x_i) = 0`, impossible since `sigma(x) = g^x` is
+never `0` in `F_p^*`. So "row is all-zero" `<=>` "bucket holds nothing",
+for any `t` in `[0, 7]`.
+
+**Ruling R-OCCUPIED-DOC** (task-19-brief.md; carried again by
+task-28-brief.md item 6, which found this file still had the pre-ruling
+wording it was supposed to have already corrected): this file used to
+claim the filter is exact "for any bucket occupancy up to `Params::K = 7`"
+— that OVERSTATES the structural basis. `K = 7` is only the table's
+storage DEPTH (how many power sums a row keeps), not itself an occupancy
+cap; nothing stops the Newton's-identities argument above from being
+invoked at `t <= 7` regardless of what actually bounds real occupancy.
+What actually bounds a REAL bucket's occupancy is the protocol's own
+`T = 4` no-overflow assumption (`Params::T`; every real `t` stays
+`<= T = 4 < 7`) — the exact assumption W5.6's overflow detector exists to
+police. So the filter is correct and exact under the protocol's own
+no-overflow assumption, strictly better than what it replaced, but the
+justification is "`t <= T = 4`, guaranteed by the protocol", not
+"`t <= K = 7`, bounded by storage depth". See `src/protocols/query.cpp`'s
+own comment at the fix site (`run_full`) for the corrected argument (same
+ruling, same wording), and `test/protocols/kat_query.cpp`'s
 `Query.ROCCUPIED_DeleteThenFullPathQueryDoesNotAbort` for a direct
 regression test that reproduces the exact old abort shape (verified, by
 temporarily reverting the fix, to actually crash without it) and now
