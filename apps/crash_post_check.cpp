@@ -8,8 +8,15 @@
 // pass the existing check. This binary is a genuine SEMANTIC checker: it
 // loads BOTH parties' state files directly (via the real production
 // PartyState::load()/PartyState::check_against(), no re-derivation of
-// anything from scratch) and validates the complete cross-party state
-// R3 requires:
+// anything from scratch) and validates the cross-party state R3 requires.
+//
+// SCOPE (Phase-6 gate review, Important 2 -- BINDING): what this binary
+// establishes is CROSS-PARTY KEY-SET plus AGGREGATE consistency, NOT
+// "every cache row reconstructs to that bucket's correct count". See the
+// claim boundary on check 7 below. Cite it as such; do not call it a
+// complete POST-state proof.
+//
+// The checks:
 //
 //   1. exact my_ids (each party's persisted id set matches the caller-
 //      supplied expected set exactly).
@@ -28,12 +35,29 @@
 //      src/protocols/query.cpp -- so a genuine committed query has
 //      identical cache key sets across parties; a partial write that
 //      drops/adds a key on one side, or between the two, diverges here).
-//   7. reconstructed cache value for every key ACROSS the two parties:
-//      opens (R.cache[beta].v + S.cache[beta].v) for every common key and
-//      sums them, then checks that sum equals the OPENED t_share
+//   7. AGGREGATE cache/t_share consistency across the two parties: opens
+//      (R.cache[beta].v + S.cache[beta].v) for every common key and sums
+//      them, then checks that sum equals the OPENED t_share
 //      (R.t_share.v + S.t_share.v) -- t_share == sum(cache), reconstructed
 //      from the persisted bytes of BOTH independent processes, not merely
 //      trusted from commit()'s own in-memory invariant.
+//
+//      CLAIM BOUNDARY (gate Important 2): this is an AGGREGATE check. No
+//      individual opened cache[beta] is compared against an independently
+//      expected per-bucket symmetric-difference rank, so any perturbation
+//      that preserves the sum passes. Concretely: add delta to R's
+//      persisted cache share at beta1 and subtract delta at beta2, leaving
+//      t_share/keys/ids/table/salt/J/query_no untouched -- every check here
+//      passes while BOTH reconstructed per-bucket values are wrong, and a
+//      later Incremental query that re-evaluates only one of those buckets
+//      would then open a wrong count. An internally consistent partial
+//      commit that pre-creates the final key set, updates a subset of
+//      values, and sets t_share to that subset's sum is likewise accepted.
+//      What check 7 DOES close is the exact demonstrated corruption in
+//      which cache values change while t_share does not; the assertion is
+//      not tautological. Strengthening it to a complete POST-state proof
+//      requires an independent expected value per opened bucket --
+//      Phase-7+ entry obligation 2.
 //
 // This is read-only introspection over already-public PartyState fields
 // and one already-existing production method (check_against); it adds no
@@ -185,9 +209,11 @@ int main(int argc, char** argv) {
            "R and S cache key sets must be IDENTICAL (both derive the same union_set in a "
            "committed query)");
 
-    // 7. reconstructed cache value for every common key + t_share ==
-    // sum(cache), both reconstructed from the two independently persisted
-    // files.
+    // 7. AGGREGATE: t_share == sum(cache) over every common key, both
+    // reconstructed from the two independently persisted files. NOT a
+    // per-bucket value check -- see the claim boundary in the file header
+    // (Phase-6 gate review, Important 2): any sum-preserving perturbation
+    // of individual cache entries passes this check.
     if (keys_r == keys_s) {
         Fp combined_sum(0);
         for (u32 beta : keys_r) combined_sum = combined_sum.add(st_r.cache.at(beta).v.add(st_s.cache.at(beta).v));

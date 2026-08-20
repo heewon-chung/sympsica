@@ -197,8 +197,13 @@ constexpr std::array<Row, 17> kRegistry{{
  "ctest --test-dir build -R "
  "'CrashInvariant\\.FC3_TVF11_WrongOrderMidQueryCommitProducesDetectablyTornState'",
  "PASSED (task-20, this run): the wrong-order partial commit's on-disk state is NOT byte-identical "
- "to either the pre-commit or the fully-committed golden -- the invariant checker detects the torn "
- "state",
+ "to the pre-commit golden -- the PRE leg discriminates. ATTRIBUTION CORRECTION (Phase-6 gate "
+ "review, Minor 2): the POST leg's byte-inequality against the fully-committed golden is CONFOUNDED "
+ "by fresh correlation randomness, which can make those bytes unequal on its own, so the POST "
+ "byte-inequality is NOT citable as torn-state discrimination. The citable POST evidence is Task "
+ "28's semantic checker apps/crash_post_check.cpp, read with its own claim boundary (gate Important "
+ "2: cross-party key-set + aggregate consistency, not per-bucket values). This is an attribution "
+ "defect only -- the real atomic save/rename sequence is not implicated",
  "", ""},
 
 {"TV-F12", RowState::kCovered,

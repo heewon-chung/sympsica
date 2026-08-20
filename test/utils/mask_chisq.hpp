@@ -123,6 +123,10 @@ inline DigitPositionStats analyze_digit_position(const std::vector<u64>& masks, 
     st.full_resolution_bins = domain;
     st.full_resolution_chisq = chisq_uniform(full_counts, n / static_cast<double>(domain));
 
+    // NOTE (Phase-6 gate review, Important 1): val/kBinWidth is a HIGH-BIT
+    // projection -- the binned statistic below, which is the only asserted
+    // one, cannot see any bias confined within a single 256-value bin. See
+    // the claim boundary at the head of test/protocols/kat_mask_uniformity.cpp.
     const u64 num_bins = domain / kBinWidth; // 256 for 16-bit digits, 32 for the 13-bit top digit
     std::vector<u64> binned_counts(num_bins, 0);
     for (u64 val = 0; val < domain; ++val) {

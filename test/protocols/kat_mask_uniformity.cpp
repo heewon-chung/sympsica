@@ -11,6 +11,27 @@
 // deliberately biased synthetic sample and must REJECT at the
 // pre-registered level -- a uniformity test that has never rejected
 // anything is not a test.
+//
+// CLAIM BOUNDARY (Phase-6 gate review, Important 1 -- BINDING). The
+// pre-registered pass/fail statistic is the BINNED one, and the binning
+// rule is val/kBinWidth with kBinWidth=256 (test/utils/mask_chisq.hpp).
+// That is a HIGH-BIT PROJECTION: for a 16-bit digit it sees only the high
+// 8 bits, for the 13-bit top digit only the high 5. The decision therefore
+// has ZERO sensitivity to any bias confined WITHIN a 256-value bin. A
+// sample drawing each nominal 16-bit digit only as 256*k with k uniform on
+// 0..255 -- support 256 of 65536, every low byte zero -- produces uniform
+// binned counts and PASSES here. The FC3 negative confines the top digit
+// to {0..9}, i.e. a BETWEEN-bin bias; no within-bin bias is exercised.
+// The full-resolution statistic is printed but never asserted, so no gate
+// consumes it.
+//
+// What the recorded numbers mean: "no rejection in a consecutive-bin,
+// high-bit-projection sanity test". They do NOT mean "the 16-bit digit
+// marginal is empirically uniform". Do not cite this test in the paper or
+// artifact as full marginal-uniformity evidence. Making that stronger
+// claim requires a within-bin-sensitive pre-registered test (complementary
+// modulo/bit projections, or a properly calibrated full-resolution
+// statistic) -- Phase-7+ entry obligation 1.
 
 #include <gtest/gtest.h>
 
