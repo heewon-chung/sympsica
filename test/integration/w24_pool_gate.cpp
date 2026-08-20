@@ -432,7 +432,20 @@ TEST(W24PoolGate, PoolScaleFeasibilityGate512GatesOverRealTcp) {
 
     // The gate itself: NO-GO fails the test (this test IS the SC gate for
     // W2.4), rather than only reporting a number for a human to eyeball.
-    ASSERT_TRUE(go) << "W2.4 NO-GO: extrapolated 8192-gate provisioning = " << extrapolated_8192_s
-                     << "s exceeds the " << kBudgetSeconds << "s budget (measured " << wall_s
-                     << "s over " << kTotalGates << " gates)";
+    //
+    // task-27-brief.md Important #8 (PLAN-REVIEW REVISION)/plan-review-tasks-
+    // 25-28.md finding 5: relabeled. run_party() above generates the FULL
+    // silent-OT pool (generate_ot_pool) BEFORE bytes_before/t_start are
+    // sampled, so wall_s/extrapolated_8192_s measure ONLY the ZT-gate
+    // steps-1-5 pipeline loop (generate_ztgates) over a pre-generated OT
+    // pool -- they exclude the OT pool's own generation time/traffic
+    // entirely. "8192-gate provisioning" overstated this as full offline
+    // provisioning of a fresh pool; the honest label is "ZT-gate steps 1-5
+    // with a pre-generated OT pool". The measurement and the GO decision
+    // are unchanged -- only the label. See task-8-report.md's addendum for
+    // the durable correction to the historical evidence record.
+    ASSERT_TRUE(go) << "W2.4 NO-GO: extrapolated 8192-gate ZT-gate-steps-1-5 time (pre-generated "
+                        "OT pool) = "
+                     << extrapolated_8192_s << "s exceeds the " << kBudgetSeconds
+                     << "s budget (measured " << wall_s << "s over " << kTotalGates << " gates)";
 }
