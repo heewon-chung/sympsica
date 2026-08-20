@@ -571,6 +571,20 @@ add_test(NAME overflow.PlantedFiveIdsFlagAtT7AndClearAfterRefresh
 add_test(NAME data.OFC1
     COMMAND python3 "${CMAKE_SOURCE_DIR}/data/test_ofac.py" TestOFC1)
 set_tests_properties(data.OFC1 PROPERTIES LABELS "data" TIMEOUT 60)
+# data.OFC2: no day's op count exceeds u_max=1024 (observed max 961, headroom 63).
+# data.OFC3: committed deltas == deterministic regeneration; replay-consistent
+# (every del hits a live real id or a distinct mapped base member; mapping total).
+# data.GenBase: full-scale n=2^22 range partition + p-exclusion + uniqueness
+# (measured 4.8 s), determinism, CLI round-trip at n=2^16.
+add_test(NAME data.OFC2
+    COMMAND python3 "${CMAKE_SOURCE_DIR}/data/test_ofac.py" TestOFC2)
+set_tests_properties(data.OFC2 PROPERTIES LABELS "data" TIMEOUT 60)
+add_test(NAME data.OFC3
+    COMMAND python3 "${CMAKE_SOURCE_DIR}/data/test_ofac.py" TestOFC3)
+set_tests_properties(data.OFC3 PROPERTIES LABELS "data" TIMEOUT 120)
+add_test(NAME data.GenBase
+    COMMAND python3 "${CMAKE_SOURCE_DIR}/data/test_base.py" TestGenBase)
+set_tests_properties(data.GenBase PROPERTIES LABELS "data" TIMEOUT 180)
 
 # ---------------------------------------------------------------------------
 # task-24-brief.md W6.6(i)/R6-MASKSTAT: the one-shot 10^5-mask-uniformity

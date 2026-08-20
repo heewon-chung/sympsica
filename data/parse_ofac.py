@@ -108,7 +108,13 @@ def parse_raw(path, wrong_abbrev=False):
         if mode is None:
             continue
 
-        # Entry accumulation.
+        # Entry accumulation. Deliberate (plan phase-7-plan.md sec. A): only headers starting
+        # with "The following" open a counting block above, so a "resulting in the following
+        # new ... entries:" continuation header is an ORDINARY line here -- it starts with
+        # "resulting", not "The following", and ends with ':' not '.', so it never terminates
+        # an entry; it glues into the next entry's text and subsequent entries keep counting
+        # under the still-open mode. This exact behavior reproduces total=11499 -- do not
+        # "improve" it.
         ebuf.append(raw.strip())
         terminates = (last_nonws(raw) == ".")
         if wrong_abbrev and terminates:
