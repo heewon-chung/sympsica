@@ -9,9 +9,14 @@
 // time on a throwaway state, to prove PkOpCounter is actually capable of
 // observing a base-OT execution -- i.e. that SC5's "constant across
 // refills" assertion is not vacuously true. Included by setup.cpp and by
-// test/protocols/kat_setup.cpp ONLY (R-HOST: this is production code
-// exposing a test hook; the include direction is test -> production
-// detail header, never the reverse).
+// test/protocols/kat_setup.cpp (R-HOST: this is production code exposing a
+// test hook; the include direction is test -> production detail header,
+// never the reverse). ALSO included by test/protocols/kat_pool_audit.cpp
+// (task-23-brief.md FC3, R6-CGB-PROMOTE non-vacuity): the SAME hook, for
+// the SAME reason -- a direct second call to run_base_ots, on a throwaway
+// SetupOtState -- demonstrates that run_e2e_gate.py's new E2E-scale
+// "PkOpCounter snapshot == final value" claim-B assertion is capable of
+// failing, not just kat_setup.cpp's own original SC5/FC3 pair.
 //
 // Why a persistent SilentOtExtSender/Receiver pair is needed at all (R-PKOP:
 // "Base OTs run only inside Setup::run; refill_offline ... runs ZERO base

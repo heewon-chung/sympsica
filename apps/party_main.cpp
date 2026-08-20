@@ -247,6 +247,13 @@ struct Config {
     u64 seed = 0;
     bool force_refresh = false;
     double budget_s = -1.0; // <= 0 means "unset, no budget"
+    // task-23-brief.md R6-AUDIT-SCALE: OFF by default (empty = no dump),
+    // additive-only observability channel. When set, a JSON audit dump of
+    // both pools' generated/consumed_ids/remaining plus the shared
+    // next_corr_id is written to this path at process exit -- test/e2e/
+    // run_e2e_gate.py's own W6.4/W6.6(ii) audit reads it; no other consumer
+    // of this binary is affected by this flag's absence.
+    std::string audit_out_path;
 };
 
 Config parse_args(int argc, char** argv) {
@@ -290,6 +297,8 @@ Config parse_args(int argc, char** argv) {
             cfg.force_refresh = true;
         } else if (a == "--budget-s") {
             cfg.budget_s = std::stod(next());
+        } else if (a == "--audit-out") {
+            cfg.audit_out_path = next();
         } else {
             SYMPSICA_REQUIRE(false, "party_main: unrecognized flag");
         }
@@ -422,6 +431,39 @@ std::string jsonl_record(const std::string& day, u64 query_no, const std::string
     return oss.str();
 }
 
+// task-23-brief.md R6-AUDIT-SCALE: the E2E-scale full-transcript audit dump
+// (W6.4/W6.6(ii)), written ONLY when --audit-out is passed. Dumps the raw
+// facts test/e2e/run_e2e_gate.py needs for the three of R6-AUDIT-TRANSCRIPT's
+// four properties that are independently checkable from outside the pool
+// (see audit_pool_transcript.hpp's header for why the fourth, cross-refill
+// global uniqueness, is relied on via CorrelationPool::refill's own
+// enforcement instead) -- generated()/consumed_ids()/remaining() (already-existing
+// CorrelationPool<T> accessors, core/pools.hpp) plus the shared
+// next_corr_id (already a public Pools field, protocols/setup.hpp) -- and
+// nothing else; this binary does not itself assert anything about them
+// (business-logic assertions on this data live in the Python driver, same
+// as every other SC/FC check that script already makes).
+std::string audit_json(const Pools& pools) {
+    auto dump_ids = [](const std::vector<u64>& ids) {
+        std::ostringstream oss;
+        oss << "[";
+        for (std::size_t i = 0; i < ids.size(); ++i) {
+            if (i != 0) oss << ",";
+            oss << ids[i];
+        }
+        oss << "]";
+        return oss.str();
+    };
+    std::ostringstream oss;
+    oss << "{\"next_corr_id\":" << pools.next_corr_id << ",\"triples\":{\"generated\":"
+        << pools.triples.generated() << ",\"remaining\":" << pools.triples.remaining()
+        << ",\"consumed_ids\":" << dump_ids(pools.triples.consumed_ids()) << "}"
+        << ",\"gates\":{\"generated\":" << pools.gates.generated()
+        << ",\"remaining\":" << pools.gates.remaining()
+        << ",\"consumed_ids\":" << dump_ids(pools.gates.consumed_ids()) << "}}";
+    return oss.str();
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -457,6 +499,14 @@ int main(int argc, char** argv) {
     std::unique_ptr<Channel> ch = connect_channel(cfg);
 
     Pools pools = Setup::run(role, *ch, params, PoolSizes{0, 0});
+
+    // task-23-brief.md R6-CGB-PROMOTE: the post-Setup PkOpCounter snapshot,
+    // additive to the pre-existing final-value line below (was: only the
+    // final value was ever printed). test/e2e/run_e2e_gate.py greps BOTH
+    // lines and asserts they're equal (and nonzero, SC4) at the end of
+    // every E2E seed run -- promoting the old unasserted stderr print into
+    // a real gate, per this task's own claim-B (CLM-B) requirement.
+    std::cerr << "pkop_counter_after_setup=" << PkOpCounter::value() << "\n";
 
     // task-19-brief.md carried item (b): std::ios::trunc (unchanged, a
     // deliberate choice, not an oversight). A crash-matrix or E2E replay
@@ -544,6 +594,17 @@ int main(int argc, char** argv) {
     // alongside test/protocols_heavy/kat_clmb.cpp's own dedicated (small-
     // scale) test that PkOpCounter stays constant after Setup::run.
     std::cerr << "pkop_counter=" << PkOpCounter::value() << "\n";
+
+    // task-23-brief.md R6-AUDIT-SCALE: the W6.4/W6.6(ii) audit dump, OFF by
+    // default (empty cfg.audit_out_path). Additive only -- no existing
+    // consumer of this binary passes --audit-out, so this is a no-op for
+    // every caller except test/e2e/run_e2e_gate.py.
+    if (!cfg.audit_out_path.empty()) {
+        std::ofstream audit_out(cfg.audit_out_path, std::ios::out | std::ios::trunc);
+        SYMPSICA_REQUIRE(audit_out.is_open(), "party_main: failed to open --audit-out file for writing");
+        audit_out << audit_json(pools);
+        audit_out.close();
+    }
 
     return 0;
 }

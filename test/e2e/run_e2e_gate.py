@@ -30,6 +30,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -61,6 +62,78 @@ def read_jsonl(path: str) -> list[dict]:
                 continue
             records.append(json.loads(line))
     return records
+
+
+def extract_u64(stderr_text: str, key: str) -> int | None:
+    """task-23-brief.md R6-CGB-PROMOTE: pull a `<key><digits>` line's value
+    out of a party's captured stderr (apps/party_main.cpp emits
+    `pkop_counter_after_setup=<N>` right after Setup::run and
+    `pkop_counter=<N>` at process exit -- two DISTINCT literal keys, neither
+    a prefix collision of the other since `pkop_counter=` requires the `=`
+    immediately after `pkop_counter`, which `pkop_counter_after_setup=`
+    never has)."""
+    m = re.search(re.escape(key) + r"(\d+)", stderr_text)
+    return int(m.group(1)) if m else None
+
+
+def audit_pool(party_name: str, pool_name: str, data: dict, next_corr_id: int) -> dict:
+    """task-23-brief.md W6.4/W6.6(ii): R6-AUDIT-TRANSCRIPT's three
+    INDEPENDENTLY-CHECKED properties, at E2E scale, against `data` -- a raw
+    {"generated": int, "remaining": int, "consumed_ids": [int, ...]} dict
+    read straight from apps/party_main.cpp's --audit-out JSON dump (the
+    SAME raw facts test/protocols/kat_pool_audit.cpp's SC1 audits
+    in-process, via test/utils/audit_pool_transcript.hpp's C++ twin of this
+    function).
+
+    Property (4) ("ids stay globally unique across refills") is NOT checked
+    here and cannot be, from this data alone: (2) only inspects the
+    CONSUMED subset, so a duplicate corr_id confined to items that were
+    generated but NEVER consumed (legal high-water stock, W3.4) would be
+    structurally invisible to it -- the full generated-id SET is not part
+    of this dump (party_main.cpp's audit_json only emits generated() as a
+    plain count, matching CorrelationPool<T>'s own public API, which has no
+    accessor for that set). Property (4) is instead enforced as a
+    PRECONDITION, at insertion time, by CorrelationPool<T>::refill itself
+    (src/core/pools.cpp): every incoming corr_id is checked against both
+    the available and already-consumed sets, in the same loop that inserts
+    it, so a duplicate -- within one refill() batch, across two calls, or
+    against an already-consumed id -- aborts the process before it is ever
+    added. This function (and the whole E2E run reaching this point) RELIES
+    ON that enforcement rather than re-verifying it: see
+    test/utils/audit_pool_transcript.hpp's header for the full argument."""
+    generated = data["generated"]
+    consumed = data["consumed_ids"]
+    remaining = data["remaining"]
+
+    # (1) reconciliation.
+    accounted = len(consumed) + remaining
+    assert generated == accounted, (
+        f"{party_name}/{pool_name}: reconciliation failed: generated={generated} "
+        f"consumed={len(consumed)} remaining={remaining} (consumed+remaining={accounted})"
+    )
+
+    # (2) no duplicates among CONSUMED ids across the whole transcript
+    # (every refill). NOT property (4) -- see this function's own
+    # docstring: this only covers the consumed subset.
+    seen = set(consumed)
+    assert len(seen) == len(consumed), (
+        f"{party_name}/{pool_name}: duplicate consumed id(s): {len(consumed)} entries, "
+        f"{len(seen)} distinct"
+    )
+
+    # (3) no id from nowhere.
+    bad = [i for i in consumed if i >= next_corr_id]
+    assert not bad, (
+        f"{party_name}/{pool_name}: consumed id(s) >= next_corr_id={next_corr_id}: {bad[:5]}"
+    )
+
+    return {
+        "generated": generated,
+        "consumed": len(consumed),
+        "remaining": remaining,
+        "highest_consumed_id": max(consumed) if consumed else None,
+        "next_corr_id": next_corr_id,
+    }
 
 
 def main(argv: list[str]) -> int:
@@ -135,15 +208,24 @@ def main(argv: list[str]) -> int:
     out_s = os.path.join(workdir, "out_s.jsonl")
     stderr_r_path = os.path.join(workdir, "stderr_r.log")
     stderr_s_path = os.path.join(workdir, "stderr_s.log")
+    # task-23-brief.md R6-AUDIT-SCALE: always requested (party_main.cpp's
+    # --audit-out is a no-op file write, never a business-logic assertion --
+    # see that flag's own comment); only READ/asserted in the normal
+    # (non-expect-mismatch) success path below, same discipline as every
+    # other SC/FC check this driver makes.
+    audit_r_path = os.path.join(workdir, "audit_r.json")
+    audit_s_path = os.path.join(workdir, "audit_s.json")
 
     port = find_free_port()
     receiver_cmd = [
         args.party_bin, "--role", "r", "--listen", str(port),
         "--schedule", args.schedule_r, "--state", state_r, "--out", out_r, "--seed", "41001",
+        "--audit-out", audit_r_path,
     ]
     sender_cmd = [
         args.party_bin, "--role", "s", "--connect", f"127.0.0.1:{port}",
         "--schedule", args.schedule_s, "--state", state_s, "--out", out_s, "--seed", "42002",
+        "--audit-out", audit_s_path,
     ]
 
     print(f"[run_e2e_gate] receiver: {' '.join(receiver_cmd)}")
@@ -179,6 +261,14 @@ def main(argv: list[str]) -> int:
     elapsed = time.monotonic() - t0
     print(f"[run_e2e_gate] both parties exited after {elapsed:.1f}s: {exit_codes}")
 
+    # Always read both parties' stderr (task-23-brief.md R6-CGB-PROMOTE
+    # needs it in the NORMAL success path too, not just the expect-mismatch
+    # crash-identification path below, which already read it here).
+    with open(stderr_r_path, "rb") as f:
+        stderr_r = f.read().decode("utf-8", "replace")
+    with open(stderr_s_path, "rb") as f:
+        stderr_s = f.read().decode("utf-8", "replace")
+
     if args.expect_mismatch and (exit_codes["receiver"] != 0 or exit_codes["sender"] != 0):
         # A wrong construction is allowed to manifest as a hard protocol
         # abort/crash instead of a graceful wrong count -- e.g. FC5's
@@ -194,12 +284,8 @@ def main(argv: list[str]) -> int:
         # file, a bad argv, a segfault in something this negative never
         # touches) would ALSO read as "the negative fired" under the old
         # unconditional `return 0` here. Positively identify the crash via a
-        # required stderr substring instead.
-        with open(stderr_r_path, "rb") as f:
-            stderr_r = f.read().decode("utf-8", "replace")
-        with open(stderr_s_path, "rb") as f:
-            stderr_s = f.read().decode("utf-8", "replace")
-
+        # required stderr substring instead. (stderr_r/stderr_s already read
+        # above, unconditionally.)
         if args.expect_crash_stderr_substring is None:
             print(f"[run_e2e_gate] FAIL: nonzero exit under --expect-mismatch "
                   f"(exit_codes={exit_codes}) but no --expect-crash-stderr-substring was given to "
@@ -299,6 +385,71 @@ def main(argv: list[str]) -> int:
               f"event(s), {delete_bearing_query_days} delete-bearing normal query day(s).")
         print(f"[run_e2e_gate] SC3 OK: all {len(expected_paths)} query-day `path` labels agree "
               f"(receiver == sender == reference.py Ref.expected_paths()): {expected_paths}")
+
+        # ---------------------------------------------------------------
+        # task-23-brief.md SC3[CGB-E2E]/SC4[CGB-NONVACUOUS]: R6-CGB-PROMOTE.
+        # (These SC numbers are task-23-brief.md's own -- distinct from this
+        # script's pre-existing SC2/SC3 labels above, which are task-19-
+        # brief.md/task-22-brief.md's numbering.)
+        # ---------------------------------------------------------------
+        snap_r = extract_u64(stderr_r, "pkop_counter_after_setup=")
+        final_r = extract_u64(stderr_r, "pkop_counter=")
+        snap_s = extract_u64(stderr_s, "pkop_counter_after_setup=")
+        final_s = extract_u64(stderr_s, "pkop_counter=")
+        assert snap_r is not None and final_r is not None, (
+            "SC3[CGB-E2E]: receiver stderr is missing a pkop_counter_after_setup=/pkop_counter= line"
+        )
+        assert snap_s is not None and final_s is not None, (
+            "SC3[CGB-E2E]: sender stderr is missing a pkop_counter_after_setup=/pkop_counter= line"
+        )
+        # SC4[CGB-NONVACUOUS]: nonzero -- a counter stuck at 0 would satisfy
+        # "never increments" vacuously (Task-16's FC3 precedent).
+        assert snap_r != 0, f"SC4[CGB-NONVACUOUS]: receiver PkOpCounter snapshot is ZERO (got {snap_r})"
+        assert snap_s != 0, f"SC4[CGB-NONVACUOUS]: sender PkOpCounter snapshot is ZERO (got {snap_s})"
+        # SC3[CGB-E2E]: snapshot == final, i.e. base OTs ran ONLY inside
+        # Setup::run -- never again across every refill_offline call AND
+        # the full multi-day schedule this seed just ran.
+        assert snap_r == final_r, (
+            f"SC3[CGB-E2E]: receiver PkOpCounter changed after Setup (snapshot={snap_r} final={final_r})"
+        )
+        assert snap_s == final_s, (
+            f"SC3[CGB-E2E]: sender PkOpCounter changed after Setup (snapshot={snap_s} final={final_s})"
+        )
+        print(f"[run_e2e_gate] SC3[CGB-E2E]/SC4[CGB-NONVACUOUS] OK: PkOpCounter snapshot == final, "
+              f"both nonzero (receiver snapshot={snap_r} final={final_r}; "
+              f"sender snapshot={snap_s} final={final_s})")
+
+        # ---------------------------------------------------------------
+        # task-23-brief.md SC2[AUDIT-E2E]: R6-AUDIT-TRANSCRIPT's three
+        # independently-checked properties, for both pools, on both
+        # parties, at E2E scale, read from apps/party_main.cpp's
+        # --audit-out dump (see audit_pool() above for the checks, why
+        # property 4 is relied-on rather than re-checked here, and
+        # R6-AUDIT-SCALE for why this dump exists).
+        # ---------------------------------------------------------------
+        with open(audit_r_path) as f:
+            audit_r_data = json.load(f)
+        with open(audit_s_path) as f:
+            audit_s_data = json.load(f)
+
+        audit_summary = {
+            "receiver": {
+                "triples": audit_pool("receiver", "triples", audit_r_data["triples"],
+                                       audit_r_data["next_corr_id"]),
+                "gates": audit_pool("receiver", "gates", audit_r_data["gates"],
+                                     audit_r_data["next_corr_id"]),
+            },
+            "sender": {
+                "triples": audit_pool("sender", "triples", audit_s_data["triples"],
+                                       audit_s_data["next_corr_id"]),
+                "gates": audit_pool("sender", "gates", audit_s_data["gates"],
+                                     audit_s_data["next_corr_id"]),
+            },
+        }
+        print(f"[run_e2e_gate] SC2[AUDIT-E2E] OK: R6-AUDIT-TRANSCRIPT's three independently-checked "
+              f"properties hold for both pools on both parties (property 4, cross-refill global "
+              f"uniqueness, is relied on via CorrelationPool::refill's own enforcement -- not "
+              f"re-checked here, see audit_pool()'s docstring): {json.dumps(audit_summary)}")
 
     return 0
 
