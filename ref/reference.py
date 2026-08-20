@@ -674,30 +674,98 @@ class Ref:
         raise RuntimeError(f"find_min3_example: failed to construct a MIN-3 example for t={t}")
 
     @staticmethod
-    def count(A: Iterable[int], B: Iterable[int], g: int, p: int = P) -> tuple[int, int]:
+    def _default_bucket_surrogate(id_: int) -> int:
+        """Pure-Python placeholder id->bucket map for Ref.count() callers
+        that don't inject a real oracle (R-ORACLE-AGNOSTIC: reference.py
+        never ports BucketOracle/BLAKE3, same constraint Ref.detect_overflow
+        already documents for its own `oracle` parameter). NOT
+        cryptographic and NOT related to the real protocol's BucketOracle
+        labels in any way -- the count identity is oracle-LABEL-agnostic
+        under the no-overflow assumption (every touched bucket's true
+        multiplicity stays <= T_CAP), so any fixed deterministic partition
+        is a valid surrogate for self-tests. A wide modulus keeps
+        moderate-size self-test inputs spread across many buckets rather
+        than colliding into one.
+        """
+        return id_ % (1 << 20)
+
+    @staticmethod
+    def count(A: Iterable[int], B: Iterable[int], g: int, p: int = P,
+              oracle=None) -> tuple[int, int]:
         """count(A, B) -> (t, |A intersect B|) (design doc's reference.py
-        contract). DEVIATION (documented, R-SIM/R-MIN scope note): the
-        real protocol partitions ids into buckets (BucketOracle, a BLAKE3
-        ROM instantiation -- no Python port exists in this repo) and runs
-        one MinorCircuit per bucket; this reference-level count() treats
-        the WHOLE input as a single conceptual bucket, which validates the
-        core algebraic identity (symmetric-difference-size recovery via
-        minors) independent of bucketing -- bucketing is a pure
-        efficiency/parallelism concern, not part of the identity itself.
-        Not consumed by the Phase-3 C++ suite (R-SIM: count()/t_of() full
-        consumption is Phase 4/6 work).
+        contract, .handoff/sympsica-design.md's "reference.py -- count(A,
+        B) -> (t, |A meet B|)" entry).
+
+        BUCKET-AWARE (task-26-brief.md R6-N1 fix, revised per
+        plan-review-tasks-25-28.md R1). The PRE-FIX version of this
+        function built ONE global depth-7 syndrome vector over the WHOLE
+        of A and B and fed it straight to Ref.t_of, whose return is
+        capped at t_max=4 regardless of the true global symmetric
+        difference -- for |A xor B| > 4 that either trips the parity
+        assertion below (odd nA+nB-t) or, worse, returns a WRONG
+        intersection silently (even nA+nB-t, still computed from the
+        truncated t). The prior docstring's claim that omitting bucketing
+        "validates the same identity" was false at this truncation:
+        bucketing is exactly what keeps each bucket's own symmetric-
+        difference multiplicity within T_CAP=4, the precondition under
+        which four minors determine that bucket's rank at all.
+
+        `oracle` is an injected id->bucket CALLABLE (R-ORACLE-AGNOSTIC,
+        the exact precedent Ref.detect_overflow already establishes for
+        its own `oracle` parameter): partitions A and B with it, and for
+        every bucket touched by EITHER side computes the TRUE plaintext
+        per-bucket multiplicity (the size of that bucket's own set
+        symmetric difference) -- if it exceeds T_CAP, aborts loudly
+        (naming the bucket and its true multiplicity; never silently
+        truncates, which was the original bug). Otherwise computes that
+        bucket's signed syndromes (Ref.syndromes's own per-id-cancelling
+        convention: an id present in both A and B at the same bucket
+        contributes to neither side's syndrome) and recovers its rank via
+        Ref.t_of, summing the recovered ranks across buckets. The count
+        identity nA + nB - t == 2*|A intersect B| is then applied ONCE to
+        that sum (not per-bucket): since `oracle` places every id in
+        exactly one bucket, the sum of per-bucket local symmetric-
+        difference sizes equals the TOTAL |A xor B|, which is what the
+        identity actually needs.
+
+        Defaults to Ref._default_bucket_surrogate when the caller injects
+        no oracle (self-test convenience only -- production code must
+        inject the real BucketOracle-derived map, which this module
+        cannot compute itself).
         """
         A = list(A)
         B = list(B)
-        d = Ref.syndromes(A, B, g, 7, p)
-        t = Ref.t_of(d, p)
+        if oracle is None:
+            oracle = Ref._default_bucket_surrogate
+
+        bucket_a: dict[int, list[int]] = {}
+        for id_ in A:
+            bucket_a.setdefault(oracle(id_), []).append(id_)
+        bucket_b: dict[int, list[int]] = {}
+        for id_ in B:
+            bucket_b.setdefault(oracle(id_), []).append(id_)
+
+        t_total = 0
+        for beta in sorted(set(bucket_a) | set(bucket_b)):
+            ids_a = bucket_a.get(beta, [])
+            ids_b = bucket_b.get(beta, [])
+            true_mult = len(set(ids_a) ^ set(ids_b))
+            assert true_mult <= T_CAP, (
+                f"Ref.count: bucket {beta} true multiplicity {true_mult} exceeds "
+                f"T_CAP={T_CAP} -- the no-overflow precondition Ref.t_of's depth-4 "
+                "minors require is violated for this bucket; refusing to silently "
+                "truncate"
+            )
+            d = Ref.syndromes(ids_a, ids_b, g, 7, p)
+            t_total += Ref.t_of(d, p)
+
         nA, nB = len(A), len(B)
-        assert (nA + nB - t) % 2 == 0, (
+        assert (nA + nB - t_total) % 2 == 0, (
             "Ref.count: |A|+|B|-t must be even for the affine "
             "2^-1(nA+nB-t) intersection-size recombination to be exact"
         )
-        intersection = (nA + nB - t) // 2
-        return t, intersection
+        intersection = (nA + nB - t_total) // 2
+        return t_total, intersection
 
     @staticmethod
     def update_filter(my_ids: Iterable[int], I: Iterable[int], D: Iterable[int]
@@ -2041,12 +2109,130 @@ def _selftest_cut6() -> None:
     )
 
 
+def _selftest_count() -> None:
+    """SC1/SC2 (task-26-brief.md R6-N1, revised per plan-review-tasks-25-
+    28.md R1). Standing regression guard for the bucket-aware Ref.count()
+    fix: the pre-fix single-global-bucket version's failure on a 5-
+    difference input (both a tripped parity assertion AND, for a 6-
+    difference input, a silent WRONG intersection) was demonstrated once
+    against the actual pre-fix code and is recorded in
+    task-26-report.md's FC1 section -- this self-test is what keeps that
+    demonstrated behaviour from regressing on every future change to this
+    module. Runs unconditionally on every import, same discipline as
+    every other _selftest_* in this module.
+    """
+    g = _generator()
+    p = P
+
+    # --- (A) SC1 revised: an EXPLICIT synthetic mapping with several
+    # SIMULTANEOUSLY occupied buckets, true local multiplicities 2, 3, 4
+    # (4 sits exactly AT T_CAP, not over it), MIXED A-only/B-only signs,
+    # and one common id (401) that CANCELS inside a multi-id bucket. A
+    # per-id "own bucket" surrogate would never exercise partitioning,
+    # multi-id accumulation, or rank summation at all -- this mapping
+    # forces all three (plan-review R1's specific objection to the
+    # original SC1 wording).
+    bucket_map = {
+        101: 10, 102: 10,                    # bucket 10: true mult 2 (1 A-only, 1 B-only)
+        201: 20, 202: 20, 203: 20,            # bucket 20: true mult 3 (2 A-only, 1 B-only)
+        301: 30, 302: 30, 303: 30, 304: 30,   # bucket 30: true mult 4 (2 A-only, 2 B-only) -- AT T_CAP
+        401: 40, 402: 40, 403: 40,            # bucket 40: 401 common (cancels), true mult 2 (402, 403)
+    }
+
+    def multi_oracle(id_: int) -> int:
+        return bucket_map[id_]
+
+    A1 = [101, 201, 202, 301, 302, 401, 402]
+    B1 = [102, 203, 303, 304, 401, 403]
+    true_inter1 = len(set(A1) & set(B1))
+    assert true_inter1 == 1, "_selftest_count setup error: expected exactly id 401 in the intersection"
+    t1, inter1 = Ref.count(A1, B1, g, p, oracle=multi_oracle)
+    assert t1 == 11, f"SC1: expected total recovered rank t=2+3+4+2=11, got {t1}"
+    assert inter1 == true_inter1, (
+        f"SC1: bucket-aware count() must recover the true intersection; got {inter1}, "
+        f"expected {true_inter1} (direct plaintext len(set(A) & set(B)))"
+    )
+
+    # --- (B) SC1 floor: global symmetric-difference sizes 5, 20, ~100,
+    # spread by a coarse-but-real modulus oracle so no bucket collects
+    # more than T_CAP ids (VERIFIED, not assumed -- same discipline
+    # _selftest_overflow's own precondition check already uses).
+    modulus = 997
+
+    def modulus_oracle(id_: int) -> int:
+        return id_ % modulus
+
+    for target_diff in (5, 20, 97):
+        state = 0xC0FFEE ^ target_diff
+        common_ids: set[int] = set()
+        a_only: set[int] = set()
+        b_only: set[int] = set()
+        while len(common_ids) < 3:
+            state, r = splitmix64_next(state)
+            common_ids.add(500_000 + (r % 400_000))
+        n_a_only = (target_diff + 1) // 2
+        n_b_only = target_diff - n_a_only
+        while len(a_only) < n_a_only:
+            state, r = splitmix64_next(state)
+            cand = 500_000 + (r % 400_000)
+            if cand not in common_ids:
+                a_only.add(cand)
+        while len(b_only) < n_b_only:
+            state, r = splitmix64_next(state)
+            cand = 500_000 + (r % 400_000)
+            if cand not in common_ids and cand not in a_only:
+                b_only.add(cand)
+
+        A2 = list(common_ids) + list(a_only)
+        B2 = list(common_ids) + list(b_only)
+
+        bucket_counts: dict[int, int] = {}
+        for id_ in set(A2) ^ set(B2):
+            bucket_counts[modulus_oracle(id_)] = bucket_counts.get(modulus_oracle(id_), 0) + 1
+        assert max(bucket_counts.values(), default=0) <= T_CAP, (
+            f"_selftest_count precondition failed for target_diff={target_diff}: a bucket collected "
+            f"more than T_CAP={T_CAP} ids by chance -- adjust the modulus/sample size"
+        )
+
+        true_inter2 = len(set(A2) & set(B2))
+        assert true_inter2 == 3, "_selftest_count setup error: expected exactly 3 common ids"
+        t2, inter2 = Ref.count(A2, B2, g, p, oracle=modulus_oracle)
+        assert t2 == target_diff, f"SC1: expected total recovered rank t={target_diff}, got {t2}"
+        assert inter2 == true_inter2, (
+            f"SC1: count() with |A xor B|={target_diff} must recover the true intersection; "
+            f"got {inter2}, expected {true_inter2} (direct plaintext len(set(A) & set(B)))"
+        )
+
+    # --- (C) SC2 revised: a DIFFERENT explicit bucket with 5 symmetric-
+    # difference ids (over T_CAP=4) must abort, and the message must name
+    # BOTH the offending bucket and its true multiplicity -- never
+    # silently truncate (the original bug).
+    overflow_bucket_map = {501: 50, 502: 50, 503: 50, 504: 50, 505: 50}
+
+    def overflow_oracle(id_: int) -> int:
+        return overflow_bucket_map[id_]
+
+    A3 = [501, 502, 503]
+    B3 = [504, 505]
+    raised = False
+    message = ""
+    try:
+        Ref.count(A3, B3, g, p, oracle=overflow_oracle)
+    except AssertionError as e:
+        raised = True
+        message = str(e)
+    assert raised, "SC2: a bucket with true multiplicity 5 (> T_CAP=4) must raise AssertionError"
+    assert "50" in message, f"SC2: abort message must name the offending bucket (50): {message!r}"
+    assert "5" in message, f"SC2: abort message must name the true multiplicity (5): {message!r}"
+
+
 _selftest_minors()  # module self-test (R-MIN): always runs, aborts via AssertionError on failure
 _selftest_overflow()  # module self-test (task-18-brief.md SC5/FC3): always runs
 _selftest_simulate_days()  # module self-test (task-18-brief.md, R-ORACLE-AGNOSTIC): always runs
 _selftest_cut4()  # module self-test (task-19-brief.md, additive): always runs
 _selftest_golden()  # module self-test (task-21-brief.md, additive): always runs
 _selftest_cut6()  # module self-test (task-22-brief.md, additive): always runs
+_selftest_count()  # module self-test (task-26-brief.md R6-N1, additive): always runs
 
 
 def _cli(argv: list[str]) -> int:
