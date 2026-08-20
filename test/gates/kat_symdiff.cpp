@@ -458,17 +458,29 @@ TEST(GatesSymdiff, SD4_M0_WireTripleAndRoundCountPinnedRow) {
     EXPECT_EQ(bytes_both_parties_per_bucket, 1472u);
     EXPECT_EQ(triples_per_bucket, 44u);
 
+    // task-28-brief.md item 4 (Phase-4 review Minor 3): triples0 and
+    // triples1 are each one party's own LOCAL SHARE count for the same 44*B
+    // distributed Beaver triples -- the paper/protocol convention is one
+    // triple = one distributed correlation with one share held by each
+    // party (kat_symdiff.cpp's own top-of-file convention). Summing
+    // triples0+triples1 double-counts: it is neither "how many triples each
+    // party holds shares of" (44*B) nor a meaningful total. The line below
+    // now reports the party-local share count and the logical distributed
+    // count SEPARATELY and correctly (both equal 44*B, verified above by
+    // triples0==triples1==44*B), instead of labeling their sum "total".
     std::fprintf(
         stderr,
         "[M0] pinned row: {triples:44, elements:184, rounds:8, bytes:1472} (per bucket) -- "
-        "B=%llu actual: triples=%llu/party (%llu total), elements=%llu both-parties, "
+        "B=%llu actual: triples=%llu/party (party-local triple shares), "
+        "%llu logical distributed triples (one share/party, NOT triples0+triples1), "
+        "elements=%llu both-parties, "
         "rounds=%llu (BOTH parties), bytes=%llu both-parties. "
         "Paper-bound delta: mu_impl=29 minors mults < mu(4)<=40 (paper bound); "
         "this gate's implementation total 44 triples < paper's 55-triple upper bound at "
         "mu=40; 184 field elements < paper's 228-element upper bound. The 55/228 figures "
         "in the manuscript are UPPER BOUNDS at mu=40, not the tight implementation "
         "constants pinned here -- flag for the manuscript constants note.\n",
-        (unsigned long long)B, (unsigned long long)triples0, (unsigned long long)(triples0 + triples1),
+        (unsigned long long)B, (unsigned long long)triples0, (unsigned long long)triples0,
         (unsigned long long)(bytes_both_parties / 8), (unsigned long long)rounds0,
         (unsigned long long)bytes_both_parties);
 
