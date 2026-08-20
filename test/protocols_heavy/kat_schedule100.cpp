@@ -44,10 +44,15 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cerrno>
 #include <cstdlib>
+#include <cstring>
+#include <filesystem>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -76,6 +81,34 @@ std::unique_ptr<Channel> connect_client_with_retry(const std::string& address) {
     }
     return ch;
 }
+
+// M3 (task-22-brief.md, carried minor): a per-process, mkdtemp-style unique
+// temp directory for party state files, replacing the old hardcoded
+// "/tmp/sympsica_sched100_{r,s}.bin" paths. Two concurrent runs of this test
+// binary -- or a stale file left behind by a killed run -- used to collide
+// silently on those fixed paths; mkdtemp's XXXXXX suffix guarantees a fresh,
+// unique directory per test invocation, and TmpDirGuard removes it again on
+// scope exit (including on a fatal ASSERT_* early-return) so nothing leaks
+// into /tmp. Same idiom as test/protocols_heavy/kat_clmb.cpp's own M3 fix.
+std::filesystem::path make_unique_tmp_dir(const std::string& tag) {
+    const std::string tmpl = (std::filesystem::temp_directory_path() / (tag + "_XXXXXX")).string();
+    std::vector<char> buf(tmpl.begin(), tmpl.end());
+    buf.push_back('\0');
+    char* dir = ::mkdtemp(buf.data());
+    if (dir == nullptr) {
+        throw std::runtime_error("mkdtemp failed for template '" + tmpl + "': " + std::strerror(errno));
+    }
+    return std::filesystem::path(dir);
+}
+
+struct TmpDirGuard {
+    std::filesystem::path dir;
+    explicit TmpDirGuard(const std::string& tag) : dir(make_unique_tmp_dir(tag)) {}
+    ~TmpDirGuard() {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+};
 
 template <typename ReceiverFn, typename SenderFn>
 void run_two_party(const std::string& address, ReceiverFn&& receiver_fn, SenderFn&& sender_fn) {
@@ -161,6 +194,10 @@ constexpr u64 kQueryTopUpBuckets = 150;
 TEST(Schedule100, SC1_HundredRandomSchedulesMatchReferencePy) {
     const auto t_start = std::chrono::steady_clock::now();
 
+    TmpDirGuard tmp_guard("sympsica_sched100");
+    const std::string state_r = (tmp_guard.dir / "r.bin").string();
+    const std::string state_s = (tmp_guard.dir / "s.bin").string();
+
     std::vector<SchedCase> cases =
         load_sched100(sympsica_test::fixture_path("test/fixtures/sched100.fixture"));
     ASSERT_EQ(cases.size(), 100u) << "SC1 fixture must carry all 100 seeds (0..99), the plan's "
@@ -192,7 +229,7 @@ TEST(Schedule100, SC1_HundredRandomSchedulesMatchReferencePy) {
                         Setup::refill_offline(pool_r, Role::Receiver, ch, params_r,
                                                PoolSizes{44 * kQueryTopUpBuckets, 4 * kQueryTopUpBuckets});
                         Share out = Query::run(Role::Receiver, st, pool_r, ch, params_r,
-                                                "/tmp/sympsica_sched100_r.bin", seed_arg);
+                                                state_r, seed_arg);
                         observed_r[i].push_back(Query::open_count(ch, out));
                     }
                 }
@@ -218,7 +255,7 @@ TEST(Schedule100, SC1_HundredRandomSchedulesMatchReferencePy) {
                         Setup::refill_offline(pool_s, Role::Sender, ch, params_s,
                                                PoolSizes{44 * kQueryTopUpBuckets, 4 * kQueryTopUpBuckets});
                         Share out = Query::run(Role::Sender, st, pool_s, ch, params_s,
-                                                "/tmp/sympsica_sched100_s.bin", seed_arg);
+                                                state_s, seed_arg);
                         observed_s[i].push_back(Query::open_count(ch, out));
                     }
                 }

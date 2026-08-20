@@ -113,6 +113,17 @@ def main(argv: list[str]) -> int:
     expected_counts = ref.Ref.simulate_days(schedule_r, schedule_s)
     print(f"[run_e2e_gate] expected counts (reference.py simulate_days): {expected_counts}")
 
+    # R6-PATHASSERT (task-22-brief.md): the expected `path` label for every
+    # query day, from the SAME single source of truth as expected_counts --
+    # ref/reference.py's Ref.expected_paths(), a Python replica of
+    # src/protocols/query.cpp's SwitchRule::decide (R-EXPECTSRC).
+    expected_paths = ref.Ref.expected_paths(schedule_r, schedule_s)
+    print(f"[run_e2e_gate] expected paths (reference.py expected_paths): {expected_paths}")
+    assert len(expected_paths) == len(expected_counts), (
+        f"expected_paths ({len(expected_paths)} labels) and simulate_days "
+        f"({len(expected_counts)} counts) disagree on query-day count -- internal reference.py bug"
+    )
+
     if args.workdir is not None and os.path.isdir(args.workdir):
         import shutil
         shutil.rmtree(args.workdir)
@@ -233,7 +244,9 @@ def main(argv: list[str]) -> int:
     delete_bearing_query_days = sum(
         1 for d in schedule_r if d["query"] and not d["maintenance"] and len(d["delete"]) > 0
     )
-    for idx, (rec_r, rec_s, expected) in enumerate(zip(records_r, records_s, expected_counts)):
+    path_mismatch_days = []
+    for idx, (rec_r, rec_s, expected, expected_path) in enumerate(
+            zip(records_r, records_s, expected_counts, expected_paths)):
         assert rec_r["day"] == rec_s["day"], f"query {idx}: day mismatch"
         assert rec_r["count"] == rec_s["count"], (
             f"query {idx} ({rec_r['day']}): the two REAL parties disagree with EACH OTHER "
@@ -241,10 +254,25 @@ def main(argv: list[str]) -> int:
             f"desync, not the wrong-construction effect under test, and is always a hard failure "
             f"regardless of --expect-mismatch"
         )
+        # R6-PATHASSERT: the two REAL parties must agree with EACH OTHER on
+        # which path they took, unconditionally -- independent of
+        # --expect-mismatch, same discipline as the count-desync check right
+        # above (a path desync is the exact failure mode the Phase-5 FC4
+        # negative exposed: SwitchRule::decide is symmetric by construction
+        # via announce-bit propagation, so real parties disagreeing on path
+        # is always a protocol-level bug, never an expected wrong-
+        # construction effect).
+        assert rec_r["path"] == rec_s["path"], (
+            f"query {idx} ({rec_r['day']}): the two REAL parties disagree with EACH OTHER on "
+            f"`path` (receiver={rec_r['path']!r} sender={rec_s['path']!r}) -- a path desync, "
+            f"always a hard failure regardless of --expect-mismatch (R6-PATHASSERT)"
+        )
         if rec_r["path"] == "maintenance_full":
             maintenance_days_seen += 1
         if rec_r["count"] != expected:
             mismatch_days.append((idx, rec_r["day"], rec_r["count"], expected))
+        if not args.expect_mismatch and rec_r["path"] != expected_path:
+            path_mismatch_days.append((idx, rec_r["day"], rec_r["path"], expected_path))
 
     if args.expect_mismatch:
         assert mismatch_days, (
@@ -256,11 +284,21 @@ def main(argv: list[str]) -> int:
               f"query day(s): {mismatch_days}")
     else:
         assert not mismatch_days, f"SC2: count mismatch(es) vs reference.py: {mismatch_days}"
+        # R6-PATHASSERT/SC3: every query day's observed `path` label must
+        # match reference.py's Ref.expected_paths() -- the single source of
+        # truth (R6-EXPECTSRC). FC1 demonstrates this assertion can actually
+        # fail (see task-22-report.md).
+        assert not path_mismatch_days, (
+            f"SC3: path-label mismatch(es) vs reference.py Ref.expected_paths(): "
+            f"{[(i, d, f'observed={o!r}', f'expected={e!r}') for i, d, o, e in path_mismatch_days]}"
+        )
         assert maintenance_days_seen >= 1, "SC2/SC5: expected >= 1 salt-refresh (maintenance) query day"
         assert delete_bearing_query_days >= 1, "SC2: expected >= 1 delete-bearing normal query day"
         print(f"[run_e2e_gate] SC2 OK: {len(expected_counts)} query days, all counts agree "
               f"(receiver == sender == reference.py), {maintenance_days_seen} maintenance-day "
               f"event(s), {delete_bearing_query_days} delete-bearing normal query day(s).")
+        print(f"[run_e2e_gate] SC3 OK: all {len(expected_paths)} query-day `path` labels agree "
+              f"(receiver == sender == reference.py Ref.expected_paths()): {expected_paths}")
 
     return 0
 

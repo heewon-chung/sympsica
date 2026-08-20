@@ -33,6 +33,13 @@ from typing import Iterable, Sequence
 P = 2305843009213693951  # 2^61 - 1
 MASK64 = (1 << 64) - 1
 
+# task-22-brief.md R6-EXPECTSRC: mirrors include/sympsica/utils/params.hpp's
+# Params::U_MAX / Params::M (== BucketOracle::M) EXACTLY -- used only by
+# Ref.decide_path()/Ref.expected_paths() below, the Python replica of
+# src/protocols/query.cpp's SwitchRule::decide.
+U_MAX = 1 << 10       # Params::U_MAX = 1024
+M_BUCKETS = 1 << 31   # Params::M = BucketOracle::M = 2^31 buckets
+
 # Unique prime factors of p-1 = 2 * 3^2 * 5^2 * 7 * 11 * 13 * 31 * 41 * 61 *
 # 151 * 331 * 1321 (same list as src/utils/encoding.cpp's kFpMinusOneFactors
 # — fixed, given verbatim; multiplicity does not matter for the generator
@@ -1284,12 +1291,31 @@ class Ref:
         `seed` only shifts the id-range offset (distinct, non-overlapping
         universes across seeds 0..3) so the four fixed schedules are
         structurally identical but operate on disjoint id spaces.
+
+        R6-INCE2E (task-22-brief.md, controller ruling, binding): seed 3
+        is RETUNED so its d3 (delete-bearing, non-maintenance query day)
+        genuinely crosses SwitchRule::decide's `2*u_max = 2048` combined-
+        size threshold and selects Incremental -- d2's per-party insert
+        batch ("extra") grows from 24 to 40 ids, so d3's post-delete
+        combined size becomes (1000+40-5) + (1001+40-5) = 1035+1036 =
+        2071 >= 2049 (was 1019+1020 = 2039 < 2049 pre-retune, i.e. ONE
+        SHORT of the threshold -- see task-22-report.md for the verified
+        arithmetic and the Phase-5 gate finding this closes). Seeds 0-2
+        keep the ORIGINAL extra=24 (structurally unchanged, R6-INCE2E's
+        "prefer retuning ONE seed... so the existing evidence and its
+        recorded runtimes stay comparable" ruling) -- they still land at
+        2039 on d3 and stay FullPublic, exactly as before this task.
+        Neither party's d3 |J| can exceed a handful (only 5 ids are
+        deleted that day, nowhere near u_max=1024), so this crossing
+        selects Incremental, not FullAnnounced (R6-INCE2E's "Check the
+        announce bit too").
         """
         off = seed * 10_000
-        r_base = list(range(1 + off, 1001 + off))     # 1000 ids
-        r_extra = list(range(1001 + off, 1025 + off)) # 24 more -> ~1024
-        s_base = list(range(600 + off, 1601 + off))   # 1001 ids, overlaps r_base in [600,1000]
-        s_extra = list(range(1601 + off, 1625 + off)) # 24 more
+        extra_count = 40 if seed == 3 else 24  # R6-INCE2E: only seed 3 is retuned
+        r_base = list(range(1 + off, 1001 + off))                    # 1000 ids
+        r_extra = list(range(1001 + off, 1001 + off + extra_count))  # 24 (or 40 for seed 3) more
+        s_base = list(range(600 + off, 1601 + off))                  # 1001 ids, overlaps r_base in [600,1000]
+        s_extra = list(range(1601 + off, 1601 + off + extra_count))  # 24 (or 40 for seed 3) more
         r_delete = [1 + off, 2 + off, 3 + off, 4 + off, 5 + off]
         s_delete = [600 + off, 601 + off, 602 + off, 603 + off, 604 + off]
 
@@ -1532,6 +1558,163 @@ class Ref:
         with open(out_path, "w") as f:
             f.write("\n".join(lines) + "\n")
 
+    # -------------------------------------------------------------------
+    # Cut 6 (task-22-brief.md P6-a / R6-EXPECTSRC, ADDITIVE -- cuts 1-5
+    # above are byte-identical to before this cut). A Python replica of
+    # SwitchRule::decide (src/protocols/query.cpp) plus
+    # Ref.expected_paths(), the single source of truth for
+    # test/e2e/run_e2e_gate.py's R6-PATHASSERT per-day path-label
+    # assertions.
+    # -------------------------------------------------------------------
+
+    @staticmethod
+    def decide_path(nA: int, nB: int, my_j: int, first_query: bool, counterpart_announced: bool) -> str:
+        """MIRRORS src/protocols/query.cpp's `SwitchRule::decide` EXACTLY
+        (same branch order, same operators -- strict '>' not '>=' on the
+        announce check, matching the DEFAULT non-SYMPSICA_WRONG_BOUNDARY
+        build). This is a SEPARATE, independently hand-written copy of
+        that C++ function's logic, not a value read out of the C++
+        binary -- R6-EXPECTSRC's single-source-of-truth requirement is
+        instead satisfied at the CALL SITE: test/e2e/run_e2e_gate.py
+        compares every schedule pair's per-day label computed here
+        against the REAL party binary's own JSONL output, so any
+        divergence between this replica and query.cpp's actual decide()
+        shows up as a hard SC3 test failure, not a silently-accepted
+        assumption (FC4 below runs that same cross-check as a committed
+        assertion). If this replica and the real C++ SwitchRule::decide
+        are ever found to disagree, that is a FINDING to report to the
+        controller, not a fixture bug to be silently papered over.
+
+        Returns one of "full_public" / "full_announced" / "incremental"
+        -- the SAME three strings apps/party_main.cpp's own path_label()
+        emits (the fourth possible JSONL label, "maintenance_full", is
+        NOT a decide() outcome at all -- SaltManager::refresh bypasses
+        decide() entirely; see Ref.expected_paths()'s own maintenance
+        special-case below, which mirrors party_main.cpp's `if (due)`
+        branch instead of calling this function for that day).
+        """
+        if first_query or 2 * U_MAX >= min(nA, M_BUCKETS) + min(nB, M_BUCKETS):
+            return "full_public"
+        if my_j > U_MAX or counterpart_announced:
+            return "full_announced"
+        return "incremental"
+
+    @staticmethod
+    def expected_paths(schedule_r: Sequence[dict], schedule_s: Sequence[dict]) -> list[str]:
+        """Per-query-day expected JSONL `path` label sequence for a W5.7
+        pair -- the SAME schedule_r/schedule_s pair Ref.simulate_days()
+        already consumes, walked the same day-by-day way
+        (Ref.update_filter's I'/D' are the ONLY ids that actually touch a
+        party's state, matching Update::apply exactly, same as
+        simulate_days), plus the two additional pieces of per-party state
+        SwitchRule::decide needs that simulate_days() does not track:
+        `my_size` (== len(ids) after this day's filtered edits) and a
+        since-last-query-commit "J" delta.
+
+        R-ORACLE-AGNOSTIC (this module never ports BucketOracle/BLAKE3 --
+        same precedent as Ref.simulate_days/Ref.detect_overflow): the
+        real |J| is the COUNT OF DISTINCT BUCKETS touched by
+        inserts/deletes since the last query commit (update.cpp:
+        `st.J.insert(G.of(x))` per filtered id x), which this module
+        cannot compute without the real oracle. This replica instead
+        tracks the COUNT OF DISTINCT IDS filtered-applied since the last
+        query commit as a deliberate UPPER BOUND on the real |J| --
+        G.of() is a function, so its image (the bucket set) can only be
+        smaller than or equal to its domain (the touched-id set), never
+        larger. This bound is sound for the "myJ > U_MAX" comparison in
+        ONE direction only: if the id-count bound is <= U_MAX, the real
+        bucket count is provably also <= U_MAX (no false "announce"); if
+        the bound exceeds U_MAX, the real bucket count COULD still be <=
+        U_MAX in a pathological high-collision case this replica cannot
+        detect. Every schedule this module actually emits touches at
+        most a few dozen ids between queries (nowhere near U_MAX=1024),
+        so this gap is not reachable by any committed fixture --
+        documented here, per R6-EXPECTSRC, rather than silently assumed
+        away.
+
+        `st.J.clear()` (query.cpp's `detail::commit`) runs after EVERY
+        query commit regardless of which path was taken (Incremental,
+        FullPublic, FullAnnounced, OR a maintenance SaltManager::refresh
+        -- query.cpp's own R-FORCEFULL comment: "Query::run's own
+        commit() clears st.J and advances st.query_no exactly as any
+        other committed query") -- so the delta-since-last-query set is
+        reset after every query day here too, not only after Incremental
+        ones, and `query_no` advances after every query day too.
+
+        Maintenance query days bypass SwitchRule::decide entirely
+        (SaltManager::due() is true whenever `day["maintenance"]` is set,
+        regardless of phi/force at this module's tiny query_no scale --
+        see task-22-report.md for the due() arithmetic; apps/
+        party_main.cpp's own `plabel = "maintenance_full"` branch never
+        even calls Query::run/decide() on such a day) -- this function
+        special-cases those exactly like party_main.cpp does, WITHOUT
+        calling decide_path() at all for that day.
+
+        Returns the label sequence, in day order, one per query day --
+        same shape/order as Ref.simulate_days()'s own count sequence.
+        """
+        assert len(schedule_r) == len(schedule_s), "expected_paths: schedule pair length mismatch"
+        ids_r: set[int] = set()
+        ids_s: set[int] = set()
+        delta_r: set[int] = set()  # ids filtered-applied since the last query commit (R side)
+        delta_s: set[int] = set()  # same, S side
+        query_no_r = 0
+        query_no_s = 0
+        labels: list[str] = []
+
+        for day_r, day_s in zip(schedule_r, schedule_s):
+            assert day_r["day"] == day_s["day"], (
+                f"expected_paths: day mismatch {day_r['day']!r} vs {day_s['day']!r} (R-SCHED2 pair drift)"
+            )
+            assert day_r["query"] == day_s["query"], (
+                f"expected_paths: query-flag mismatch on {day_r['day']!r} (R-SCHED2 pair drift)"
+            )
+            assert day_r["maintenance"] == day_s["maintenance"], (
+                f"expected_paths: maintenance-flag mismatch on {day_r['day']!r} (R-SCHED2 pair drift)"
+            )
+
+            ir_prime, dr_prime = Ref.update_filter(ids_r, day_r["insert"], day_r["delete"])
+            ids_r -= set(dr_prime)
+            ids_r |= set(ir_prime)
+            delta_r |= set(ir_prime) | set(dr_prime)
+
+            is_prime, ds_prime = Ref.update_filter(ids_s, day_s["insert"], day_s["delete"])
+            ids_s -= set(ds_prime)
+            ids_s |= set(is_prime)
+            delta_s |= set(is_prime) | set(ds_prime)
+
+            if day_r["query"]:
+                if day_r["maintenance"]:
+                    label = "maintenance_full"
+                else:
+                    first_r = query_no_r == 0
+                    first_s = query_no_s == 0
+                    assert first_r == first_s, (
+                        f"expected_paths: day {day_r['day']!r}: first-query flags disagree "
+                        f"(R-SCHED2 pair drift -- query_no_r={query_no_r} query_no_s={query_no_s})"
+                    )
+                    my_j_r = len(delta_r)
+                    my_j_s = len(delta_s)
+                    announce_r = my_j_r > U_MAX
+                    announce_s = my_j_s > U_MAX
+                    label_r = Ref.decide_path(len(ids_r), len(ids_s), my_j_r, first_r, announce_s)
+                    label_s = Ref.decide_path(len(ids_s), len(ids_r), my_j_s, first_s, announce_r)
+                    assert label_r == label_s, (
+                        f"expected_paths: day {day_r['day']!r}: R/S replicas disagree "
+                        f"(R={label_r!r} S={label_s!r}) -- SwitchRule::decide is symmetric by "
+                        f"construction (each side's announce bit is what the OTHER side's "
+                        f"decide() call consumes), so a disagreement here would itself be a "
+                        f"real finding"
+                    )
+                    label = label_r
+                labels.append(label)
+                query_no_r += 1
+                query_no_s += 1
+                delta_r.clear()
+                delta_s.clear()
+
+        return labels
+
 
 def _selftest_minors() -> None:
     """MIN-2 worked row (task-11-brief.md R-MIN; .handoff/sympsica-test-
@@ -1752,11 +1935,118 @@ def _selftest_golden() -> None:
     )
 
 
+def _selftest_cut6() -> None:
+    """Module self-test (task-22-brief.md P6-a, additive): decide_path()'s
+    three branches on hand-picked boundary values, plus expected_paths()
+    on the real (retuned) E2E-1..4 schedule pairs -- seed 3's d3 must be
+    "incremental" (R6-INCE2E); seeds 0-2's d3 must stay "full_public"
+    (R6-NOSHRINK: unchanged by this task). Runs unconditionally on every
+    import, same "module self-test" discipline as every other
+    _selftest_* function in this file.
+    """
+    # decide_path() boundary: combined size EXACTLY at the threshold
+    # (2*U_MAX=2048) is FullPublic (the real check is `>=`, not `>`);
+    # 2049 is the first combined size that can select something other
+    # than FullPublic at all (still gated by myJ/announce below).
+    assert Ref.decide_path(1024, 1024, 0, False, False) == "full_public"
+    assert Ref.decide_path(1025, 1024, 0, False, False) == "incremental"
+    assert Ref.decide_path(1025, 1024, 0, True, False) == "full_public"  # first query always full
+    assert Ref.decide_path(1025, 1024, U_MAX + 1, False, False) == "full_announced"
+    assert Ref.decide_path(1025, 1024, U_MAX, False, False) == "incremental"  # == is NOT announce
+    assert Ref.decide_path(1025, 1024, 0, False, True) == "full_announced"  # counterpart announced
+
+    for seed in range(4):
+        er, es = Ref.make_e2e_schedule_pair(seed)
+        labels = Ref.expected_paths(er, es)
+        assert len(labels) == 3, f"_selftest_cut6: seed={seed} expected 3 query-day labels, got {labels}"
+        assert labels[0] == "full_public", (
+            f"_selftest_cut6: seed={seed} d1 (first query) must be full_public, got {labels}"
+        )
+        assert labels[1] == "maintenance_full", (
+            f"_selftest_cut6: seed={seed} d2 (maintenance) must be maintenance_full, got {labels}"
+        )
+        if seed == 3:
+            assert labels[2] == "incremental", (
+                f"_selftest_cut6: R6-INCE2E -- seed 3's d3 must be 'incremental', got {labels}"
+            )
+        else:
+            assert labels[2] == "full_public", (
+                f"_selftest_cut6: R6-NOSHRINK -- seed {seed}'s d3 must stay 'full_public' "
+                f"(unchanged by this task), got {labels}"
+            )
+
+    # FC2 [threshold boundary is real] (task-22-brief.md): the retuned seed
+    # 3's d3 combined size genuinely crosses SwitchRule::decide's
+    # `2*u_max=2048` threshold, and the PRE-retune combined size (2039 --
+    # seed 0-2's own unchanged d3, and what seed 3's d3 used to be before
+    # this task) would NOT have selected Incremental under the exact same
+    # rule. Recomputed directly from the fixture's own insert/delete lists
+    # via Ref.update_filter (the same per-party evolution Ref.simulate_days
+    # uses), not hand-derived from the two sides of this very assertion
+    # (R6-NOTAUTO): the "actual" side is real fixture data run through the
+    # production filter function, the "expected" side is the literal
+    # threshold constant.
+    er3, es3 = Ref.make_e2e_schedule_pair(3)
+    ids_r3: set[int] = set()
+    ids_s3: set[int] = set()
+    for day in er3:
+        i_prime, d_prime = Ref.update_filter(ids_r3, day["insert"], day["delete"])
+        ids_r3 -= set(d_prime)
+        ids_r3 |= set(i_prime)
+    for day in es3:
+        i_prime, d_prime = Ref.update_filter(ids_s3, day["insert"], day["delete"])
+        ids_s3 -= set(d_prime)
+        ids_s3 |= set(i_prime)
+    nA3, nB3 = len(ids_r3), len(ids_s3)
+    assert (nA3, nB3) == (1035, 1036), (
+        f"_selftest_cut6: FC2 -- seed 3's post-d3 party sizes drifted, expected (1035, 1036), "
+        f"got ({nA3}, {nB3})"
+    )
+    combined_retuned = nA3 + nB3
+    assert combined_retuned == 2071, f"_selftest_cut6: FC2 -- expected combined size 2071, got {combined_retuned}"
+    assert combined_retuned >= 2049, (
+        f"_selftest_cut6: FC2 -- retuned d3 combined size {combined_retuned} must be >= 2049 "
+        f"(the first combined size that can select Incremental at all)"
+    )
+    assert Ref.decide_path(nA3, nB3, 0, False, False) == "incremental", (
+        "_selftest_cut6: FC2 -- the retuned combined size must actually select Incremental"
+    )
+    # The PRE-retune combined size (2039, seed 0-2's own d3, verified by
+    # the seed-0..2 branch of the loop above) must NOT select Incremental.
+    combined_pre_retune = 1019 + 1020
+    assert combined_pre_retune == 2039
+    assert Ref.decide_path(1019, 1020, 0, False, False) == "full_public", (
+        "_selftest_cut6: FC2 -- the PRE-retune combined size (2039) must stay full_public, "
+        "not Incremental -- this is exactly the Phase-5 gate finding's 'one short' arithmetic"
+    )
+
+    # FC3 [announce bit] (task-22-brief.md): on the incremental day neither
+    # party's |J| exceeds u_max and neither announce bit is set -- only 5
+    # ids are deleted on d3 (real fixture data, not a hand-picked number),
+    # so |J| <= 5 << u_max=1024 on both sides, airtight without needing to
+    # approach the boundary.
+    d3_r = er3[-1]
+    d3_s = es3[-1]
+    assert d3_r["maintenance"] is False and d3_s["maintenance"] is False
+    j_upper_bound_r = len(set(d3_r["insert"]) | set(d3_r["delete"]))
+    j_upper_bound_s = len(set(d3_s["insert"]) | set(d3_s["delete"]))
+    assert j_upper_bound_r <= U_MAX and j_upper_bound_s <= U_MAX, (
+        f"_selftest_cut6: FC3 -- d3 |J| upper bounds ({j_upper_bound_r}, {j_upper_bound_s}) "
+        f"must not exceed u_max={U_MAX}, or the day would be FullAnnounced, not Incremental"
+    )
+    assert not (j_upper_bound_r > U_MAX) and not (j_upper_bound_s > U_MAX)  # explicit announce-bit check
+    assert Ref.decide_path(nA3, nB3, j_upper_bound_r, False, False) == "incremental", (
+        "_selftest_cut6: FC3 -- with the real |J| upper bound plugged in, decide_path must still "
+        "select Incremental, not FullAnnounced"
+    )
+
+
 _selftest_minors()  # module self-test (R-MIN): always runs, aborts via AssertionError on failure
 _selftest_overflow()  # module self-test (task-18-brief.md SC5/FC3): always runs
 _selftest_simulate_days()  # module self-test (task-18-brief.md, R-ORACLE-AGNOSTIC): always runs
 _selftest_cut4()  # module self-test (task-19-brief.md, additive): always runs
 _selftest_golden()  # module self-test (task-21-brief.md, additive): always runs
+_selftest_cut6()  # module self-test (task-22-brief.md, additive): always runs
 
 
 def _cli(argv: list[str]) -> int:

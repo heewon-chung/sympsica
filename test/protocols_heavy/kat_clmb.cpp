@@ -19,8 +19,14 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -34,6 +40,34 @@
 using namespace sympsica;
 
 namespace {
+
+// M3 (task-22-brief.md, carried minor): a per-process, mkdtemp-style unique
+// temp directory for party state files, replacing the old hardcoded
+// "/tmp/sympsica_clmb_{r,s}.bin" paths. Two concurrent runs of this test
+// binary -- or a stale file left behind by a killed run -- used to collide
+// silently on those fixed paths; mkdtemp's XXXXXX suffix guarantees a fresh,
+// unique directory per test invocation, and TmpDirGuard removes it again on
+// scope exit (including on a fatal ASSERT_* early-return) so nothing leaks
+// into /tmp.
+std::filesystem::path make_unique_tmp_dir(const std::string& tag) {
+    const std::string tmpl = (std::filesystem::temp_directory_path() / (tag + "_XXXXXX")).string();
+    std::vector<char> buf(tmpl.begin(), tmpl.end());
+    buf.push_back('\0');
+    char* dir = ::mkdtemp(buf.data());
+    if (dir == nullptr) {
+        throw std::runtime_error("mkdtemp failed for template '" + tmpl + "': " + std::strerror(errno));
+    }
+    return std::filesystem::path(dir);
+}
+
+struct TmpDirGuard {
+    std::filesystem::path dir;
+    explicit TmpDirGuard(const std::string& tag) : dir(make_unique_tmp_dir(tag)) {}
+    ~TmpDirGuard() {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+};
 
 std::unique_ptr<Channel> connect_client_with_retry(const std::string& address) {
     std::unique_ptr<Channel> ch;
@@ -62,6 +96,10 @@ void run_two_party(const std::string& address, ReceiverFn&& receiver_fn, SenderF
 } // namespace
 
 TEST(ClmB, SC6_PkOpCounterConstantAcrossSetupTwentyRefillsAndASchedule) {
+    TmpDirGuard tmp_guard("sympsica_clmb");
+    const std::string state_r = (tmp_guard.dir / "r.bin").string();
+    const std::string state_s = (tmp_guard.dir / "s.bin").string();
+
     Params params_r = Params::instantiate();
     Params params_s = Params::instantiate();
 
@@ -108,11 +146,11 @@ TEST(ClmB, SC6_PkOpCounterConstantAcrossSetupTwentyRefillsAndASchedule) {
     run_two_party(
         "127.0.0.1:49952",
         [&](Channel& ch) {
-            (void)Query::run(Role::Receiver, st_r, pool_r, ch, params_r, "/tmp/sympsica_clmb_r.bin",
+            (void)Query::run(Role::Receiver, st_r, pool_r, ch, params_r, state_r,
                               /*seed=*/9001);
         },
         [&](Channel& ch) {
-            (void)Query::run(Role::Sender, st_s, pool_s, ch, params_s, "/tmp/sympsica_clmb_s.bin",
+            (void)Query::run(Role::Sender, st_s, pool_s, ch, params_s, state_s,
                               /*seed=*/9002);
         });
 
@@ -123,12 +161,12 @@ TEST(ClmB, SC6_PkOpCounterConstantAcrossSetupTwentyRefillsAndASchedule) {
         "127.0.0.1:49953",
         [&](Channel& ch) {
             Setup::refill_offline(pool_r, Role::Receiver, ch, params_r, PoolSizes{2000, 200});
-            (void)Query::run(Role::Receiver, st_r, pool_r, ch, params_r, "/tmp/sympsica_clmb_r.bin",
+            (void)Query::run(Role::Receiver, st_r, pool_r, ch, params_r, state_r,
                               /*seed=*/9003);
         },
         [&](Channel& ch) {
             Setup::refill_offline(pool_s, Role::Sender, ch, params_s, PoolSizes{2000, 200});
-            (void)Query::run(Role::Sender, st_s, pool_s, ch, params_s, "/tmp/sympsica_clmb_s.bin",
+            (void)Query::run(Role::Sender, st_s, pool_s, ch, params_s, state_s,
                               /*seed=*/9004);
         });
 

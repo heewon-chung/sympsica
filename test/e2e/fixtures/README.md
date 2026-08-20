@@ -128,3 +128,59 @@ regardless of this fix. `2023-01-05` is the day that specifically requires
 the fix: a plain, non-maintenance `Query::run` call, reached via
 `SwitchRule::decide`'s ordinary size condition, with a delete immediately
 before it and no rebuild in between.
+
+## Task 22 (P6-a, R6-INCE2E/R6-PATHASSERT): seed 3 retuned to reach `Incremental`
+
+**Phase-5 gate finding, closed by this change**: `SwitchRule::decide`
+(`src/protocols/query.cpp`) takes the `Incremental` path only when the
+combined party size `min(nA,M) + min(nB,M)` strictly exceeds `2*u_max =
+2048`. Every `e2e_seed{0..3}` pair's `d3` (delete-bearing, non-maintenance
+query day) used to land at combined size `1019 + 1020 = 2039` — ONE SHORT
+of the threshold — so all four E2E seeds were `FullPublic`-only on every
+non-maintenance day, and the INCREMENTAL path (the paper's flagship
+"updatable" claim) had never run across two real OS processes nor on
+`Setup`-produced (production-pool) triples.
+
+**Fix**: `Ref.make_e2e_schedule_pair(seed)` (`ref/reference.py`) now
+special-cases `seed == 3`: its `d2` maintenance-day insert batch grows from
+24 to 40 ids per party, so `d3`'s post-delete combined size becomes
+`(1000+40-5) + (1001+40-5) = 1035 + 1036 = 2071 >= 2049`, crossing the
+threshold with real margin. Neither party's `d3` `|J|` can exceed a
+handful (only 5 ids are deleted that day, nowhere near `u_max = 1024`), so
+this selects `Incremental`, not `FullAnnounced`. Seeds 0-2 are UNCHANGED
+(R6-INCE2E: "prefer retuning ONE seed... so the existing evidence and its
+recorded runtimes stay comparable") — only `e2e_seed3_{r,s}.json` differ
+from before this task (`d2`'s insert list grows from 24 to 40 ids; `d0`,
+`d1`, `d3` are byte-identical). Regenerated via the committed CLI, never
+hand-edited:
+
+```
+python3 ref/reference.py emit-e2e --seed 3 --out-r test/e2e/fixtures/e2e_seed3_r.json --out-s test/e2e/fixtures/e2e_seed3_s.json
+```
+
+Because `apps/party_main.cpp` calls `Setup::run`/`Setup::refill_offline`
+and each E2E party is its own OS process, this single retuned query day
+closes BOTH halves of the Phase-5 finding at once: it is the first time
+the incremental path has run over two real processes AND on
+`Setup`-produced pools. See `task-22-report.md` for the full arithmetic,
+the observed JSONL records, and the before/after runtimes.
+
+**Expected per-day `path` labels (`ref/reference.py`'s
+`Ref.expected_paths()`, a Python replica of `SwitchRule::decide`,
+R6-EXPECTSRC)**, now asserted by `test/e2e/run_e2e_gate.py` for every
+query day of every seed (R6-PATHASSERT, discharges minor M4 — the driver
+used to read `rec_r["path"]` only to count maintenance days and asserted
+nothing about its value):
+
+| seed | d1 | d2 | d3 |
+|---|---|---|---|
+| 0, 1, 2 | `full_public` | `maintenance_full` | `full_public` |
+| 3 | `full_public` | `maintenance_full` | **`incremental`** |
+
+`run_e2e_gate.py` also asserts `rec_r["path"] == rec_s["path"]`
+unconditionally (independent of `--expect-mismatch`) — a path desync
+between the two real parties is the exact failure mode the Phase-5 FC4
+negative exposed, and `SwitchRule::decide` is symmetric by construction
+(each side's announce bit is what the other side's `decide()` call
+consumes), so real parties disagreeing on path is always a protocol-level
+bug, never an expected wrong-construction effect.
