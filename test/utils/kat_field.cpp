@@ -79,7 +79,8 @@ TEST(Field, FLD3_InverseIdentity1e4) {
 //    is not exercising the other.
 // 2. Separately, and independent of (1): for CANONICAL operands a,b < p,
 //    a*b < 2^122 (p < 2^61), so after ONE Mersenne fold
-//    r = (t & p) + (t >> 61) we get r < 2p (t>>61 < 2^61, t&p < p), and a
+//    r = (t & p) + (t >> 61) we get r < 2p (t>>61 < 2^61, t&p <= p -- p is
+//    a Mersenne prime, all 61 low bits set, so t&p can reach p itself), and a
 //    SINGLE conditional subtraction already lands r in [0,p). The second
 //    fold in the committed double-fold mul()/from_u64() (field.hpp) is
 //    therefore harmless but NOT mathematically necessary for canonical
