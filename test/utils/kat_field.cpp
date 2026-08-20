@@ -27,12 +27,18 @@ using sympsica_test::digest_update;
 using sympsica_test::fixture_path;
 using sympsica_test::splitmix64_next;
 
-// FLD-1 [CONCRETE]: over F_101: 97+7, 97*7 -> 3, 73. Fp is hardcoded to
-// p = 2^61-1 (field.hpp), so this hand-checkable toy row is exercised with
-// plain u64 modular arithmetic rather than the Fp class (mirrors how ENC-2
-// uses Encoder::sigma_generic for its own toy-field row) — it validates
-// that the doc's worked example is itself internally consistent.
-TEST(Field, FLD1_ConcreteF101) {
+// FLD-1 [CONCRETE] — task-27-brief.md Minor #6/R6-NOTAUTO: RELABELED. This is
+// a DOCUMENTATION SELF-CHECK, not implementation evidence: it computes
+// 97+7, 97*7 -> 3, 73 with plain built-in u64 arithmetic over the toy
+// modulus 101 and calls NO sympsica field code at all (Fp is hardcoded to
+// p = 2^61-1, so it cannot even be exercised at this modulus). A regression
+// in Fp::add or Fp::mul leaves this test green regardless. It exists only to
+// confirm the worked example quoted in the test-vector doc is itself
+// arithmetically self-consistent, i.e. it can catch a typo in the doc, not a
+// defect in the artifact. Production field correctness is exercised by
+// FLD-2..7 and MulAssociativityCanonicityFixture1e6PerSeed below, all of
+// which call the real Fp class.
+TEST(Field, FLD1_DocumentationSelfCheckF101) {
     constexpr u64 p101 = 101;
     EXPECT_EQ((97u + 7u) % p101, 3u);
     EXPECT_EQ((97u * 7u) % p101, 73u);
@@ -62,10 +68,37 @@ TEST(Field, FLD3_InverseIdentity1e4) {
 // Ref.emit_fixtures), so any committed seed's fixture carries the same 5
 // rows; seed0.fixture is used as the canonical source.
 //
-// This is exactly the boundary set that would expose a single-fold (instead
-// of the required double-fold) Fp::from_u64/Fp::mul reduction bug: the
-// 2^64-1 row in particular needs the second fold to land on the correct
-// canonical value 7 (Phase-1 FC).
+// CORRECTED CLAIM (task-27-brief.md Important #2/R6-NOTAUTO — the original
+// comment here claimed this row set would expose a "single-fold mul" bug;
+// that claim was WRONG and has been retracted, not just relabeled):
+//
+// 1. This test calls ONLY Fp::from_u64 (never Fp::mul), so a defect
+//    confined to Fp::mul cannot make FLD-4 fail in the first place —
+//    from_u64 and mul are separate reduction call sites in field.hpp that
+//    happen to share the same fold-and-subtract shape, but exercising one
+//    is not exercising the other.
+// 2. Separately, and independent of (1): for CANONICAL operands a,b < p,
+//    a*b < 2^122 (p < 2^61), so after ONE Mersenne fold
+//    r = (t & p) + (t >> 61) we get r < 2p (t>>61 < 2^61, t&p < p), and a
+//    SINGLE conditional subtraction already lands r in [0,p). The second
+//    fold in the committed double-fold mul()/from_u64() (field.hpp) is
+//    therefore harmless but NOT mathematically necessary for canonical
+//    in-scope operands — a hypothetical one-fold-plus-subtract
+//    implementation would compute the IDENTICAL canonical result on every
+//    input in this row set (including the 2^64-1 row: its from_u64 folding
+//    starts from a 64-bit, not a 122-bit, product, but the same "one fold
+//    already lands under 2p" argument applies: x>>61 < 8, so one fold plus
+//    one subtract suffices there too). So "single-fold" is not a wrong
+//    construction this row set — or any from_u64/mul input — can
+//    distinguish from the committed double-fold; it should not, and does
+//    not, fail FLD-4.
+//
+// A genuinely wrong Fp::mul mutation (one that actually diverges from the
+// correct product, e.g. dropping the final conditional subtraction so
+// non-canonical results leak through) is exercised by
+// MulAssociativityCanonicityFixture1e6PerSeed below via its canonicity check
+// — see that test's comment for the R6-NOTAUTO demonstration recorded in
+// task-27-report.md.
 TEST(Field, FLD4_BoundaryReduction) {
     Fixture fx(fixture_path("test/fixtures/seed0.fixture"));
     auto rows = fx.all("fld4");
@@ -135,6 +168,21 @@ TEST(Field, FLD7_FromBlockCanonical1e6) {
 // each (10^7 total Fp::mul calls). The pinned splitmix64 PRNG regenerates
 // the exact input sequence reference.py used, so only a PRNG seed + count +
 // digest need to be shipped in the fixture (see fixture_support.hpp).
+//
+// task-27-brief.md Important #2/R6-NOTAUTO: THIS is the correct home for a
+// genuinely-wrong Fp::mul mutation demonstration — not FLD-4 above, which
+// calls only from_u64 and can never observe a mul-only defect. This test
+// DOES call Fp::mul directly (ab = a.mul(b), abc = ab.mul(c), a_bc =
+// a.mul(bc)) and gates on three independent properties any wrong mul
+// mutation must defeat all of: canonicity (every product < P), associativity
+// (abc == a_bc, checked in-process, no reference needed), and the
+// cross-language digest (must match reference.py's independent plain-bigint
+// mod arithmetic). Demonstrated in task-27-report.md: a temporary
+// single-fold-without-final-subtract Fp::mul mutation (dropping the
+// `if (r >= P) r -= P;` line) was built and run against this test; it fails
+// both the canonicity and digest checks with real recorded output, then was
+// reverted (git checkout) and the suite re-confirmed green. Fp::mul itself
+// is NOT changed by task-27 — it is, and remains, correct.
 TEST(Field, MulAssociativityCanonicityFixture1e6PerSeed) {
     for (int seed = 0; seed <= 9; ++seed) {
         Fixture fx(fixture_path("test/fixtures/seed" + std::to_string(seed) + ".fixture"));
