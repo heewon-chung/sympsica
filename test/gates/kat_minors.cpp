@@ -332,9 +332,21 @@ TEST(GatesMinors, MIN1_RankOneIdentity) {
 // MIN-2 [CONCRETE] — the F_101 worked row: signed difference {2(+), 3(-)},
 // t=2: D_1=100, D_2=95, D_3=0, D_4=0. Via the plaintext helper above (see
 // requirement 5: MinorCircuit is Fp-hardwired to p=2^61-1).
+//
+// HONEST LABEL (task-28-brief.md item 3, first half): this calls ONLY
+// min_plaintext_f101 (the doc's worked-row formula, transcribed above by
+// hand into plain toy-F_101 arithmetic) -- it never calls the production
+// MinorCircuit, and never crosses process/MPC boundaries at all. A
+// production-only error in MinorCircuit's real F_p schedule leaves this
+// test green. It is therefore a REFERENCE-FORMULA SELF-CHECK: it pins that
+// the doc's worked minors formula and this test file's own hand transcript
+// of it agree, nothing about the production circuit. MIN-3 and MIN-4 below
+// are what actually send concrete/seeded rows through the REAL two-party
+// MinorCircuit::eval over the production field and cross-check the result
+// against reference.py -- those are this suite's production evidence.
 // ---------------------------------------------------------------------------
 
-TEST(GatesMinors, MIN2_ConcreteF101Row) {
+TEST(GatesMinors, MIN2_ReferenceFormulaSelfCheckF101Row) {
     std::array<long long, 7> d{};
     for (int k = 1; k <= 7; ++k) {
         long long p2 = 1, p3 = 1;
@@ -474,17 +486,34 @@ TEST(GatesMinors, TVF7_FirstZeroRuleMisreadsInteriorZeroCases) {
 }
 
 // ---------------------------------------------------------------------------
-// MIN-4 [SEED-FIXED] — all t in {0..4}, 100 random signed sets each (500
-// total): recovered t exact vs reference.py. Runs the REAL two-party
+// MIN-4 [SEED-FIXED] — all t in {0..4}, 100 random signed sets each per
+// fixture (task-13-brief.md W4.2 requires a 10^3-vector production
+// cross-check): recovered t exact vs reference.py. Runs the REAL two-party
 // MinorCircuit/BeaverEngine over dealer triples, one shared channel for all
-// 500 cases.
+// cases.
+//
+// task-28-brief.md item 3 (second half): the original version of this test
+// wired only min0.fixture (500 rows), while min1.fixture/min2.fixture were
+// committed and sat unused -- meeting W4.2's stated 10^3 requirement with
+// half the number. Now wires min0.fixture AND min1.fixture (independently
+// seeded 0/1 by ref/reference.py's emit-min, same generator, disjoint
+// pseudorandom draws) for 500+500 = 1000 rows, meeting the plan's number
+// instead of quietly reducing it to match the code. min2.fixture remains
+// committed but unused (a third fixture was not needed once two meet the
+// 10^3 figure); nothing about it is a defect.
 // ---------------------------------------------------------------------------
 
 TEST(GatesMinors, MIN4_AllTRandomSignedSetsMatchReference) {
-    sympsica_test::Fixture fx(sympsica_test::fixture_path("test/fixtures/min0.fixture"));
-    const auto rows = fx.all("min4");
-    ASSERT_EQ(rows.size(), fx.u64_at("min4_count"));
+    sympsica_test::Fixture fx0(sympsica_test::fixture_path("test/fixtures/min0.fixture"));
+    sympsica_test::Fixture fx1(sympsica_test::fixture_path("test/fixtures/min1.fixture"));
+    auto rows = fx0.all("min4");
+    ASSERT_EQ(rows.size(), fx0.u64_at("min4_count"));
     ASSERT_EQ(rows.size(), 500u);
+    const auto rows1 = fx1.all("min4");
+    ASSERT_EQ(rows1.size(), fx1.u64_at("min4_count"));
+    ASSERT_EQ(rows1.size(), 500u);
+    rows.insert(rows.end(), rows1.begin(), rows1.end());
+    ASSERT_EQ(rows.size(), 1000u) << "W4.2 requires a 10^3-vector production cross-check";
 
     const std::size_t n_cases = rows.size();
     std::vector<std::vector<Fp>> d_all(n_cases);
