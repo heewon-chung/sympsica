@@ -1,5 +1,7 @@
 #include "sympsica/utils/net.hpp"
 
+#include <atomic>
+
 #include "coproto/Socket/AsioSocket.h"
 // macoro/sync_wait.h and macoro/when_all.h use std::source_location/
 // basic_traceable but do not include macoro/trace.h themselves -- same gap
@@ -69,13 +71,34 @@
 
 namespace sympsica {
 
+namespace {
+// task-24-brief.md SC2/R6-CGA-RUNTIME: process-wide, always-compiled
+// Channel-construction counter. std::atomic (not a plain u64) because
+// test/utils/net_smoke.cpp and test/utils/net_exchange.cpp both construct
+// Channels from two DIFFERENT threads within the same process (an
+// in-process loopback harness), so concurrent increments are a real
+// possibility here, unlike most other counters in this codebase.
+std::atomic<u64> g_channel_construction_count{0};
+} // namespace
+
 struct Channel::Impl {
     coproto::Socket sock;
 };
 
 Channel::Channel(const std::string& address, bool is_server)
     : impl_(std::make_unique<Impl>()) {
+    // Incremented FIRST, before coproto::asioConnect() runs -- so a
+    // construction attempt that throws (e.g. a client's connect() racing an
+    // as-yet-unstarted listener) is still counted as a real Channel
+    // construction attempt, matching the SC2 grep-guard's own static
+    // reasoning ("Channel(...) was invoked" is the fact being counted, not
+    // "Channel(...) returned successfully").
+    g_channel_construction_count.fetch_add(1, std::memory_order_relaxed);
     impl_->sock = coproto::asioConnect(address, is_server);
+}
+
+u64 Channel::construction_count() {
+    return g_channel_construction_count.load(std::memory_order_relaxed);
 }
 
 Channel::~Channel() = default;

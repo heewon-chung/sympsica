@@ -11,6 +11,16 @@
 // the Channel constructor's own server/client distinction is what matters,
 // not which protocol role this party plays).
 //
+// [--update-only] (task-24-brief.md SC1/CG-A, additive): a ZERO-
+// communication mode. When set, --listen/--connect/--out/--seed's networked
+// counterpart are not needed (--seed is still required by the flag parser
+// for uniformity, but this mode never reads it): the schedule is applied
+// via Update::apply ONLY (local, no Channel, no Setup::run, no per-day
+// query/maintenance handling) and the process exits 0 without ever having
+// constructed a Channel. Every schedule day's `query` flag MUST be false in
+// this mode (SYMPSICA_REQUIRE) -- a query day needs a Channel, which this
+// mode exists specifically to never construct.
+//
 // Schedule JSON (W5.7, this party's OWN stream): a top-level array of day
 // objects, `[{"day":"2023-01-05","insert":[ids],"delete":[ids],
 // "query":true,"maintenance":false}]`. Parsed by a small hand-rolled
@@ -254,6 +264,9 @@ struct Config {
     // run_e2e_gate.py's own W6.4/W6.6(ii) audit reads it; no other consumer
     // of this binary is affected by this flag's absence.
     std::string audit_out_path;
+    // task-24-brief.md SC1/CG-A: OFF by default, additive-only. See this
+    // file's top comment for the mode's full contract.
+    bool update_only = false;
 };
 
 Config parse_args(int argc, char** argv) {
@@ -299,13 +312,21 @@ Config parse_args(int argc, char** argv) {
             cfg.budget_s = std::stod(next());
         } else if (a == "--audit-out") {
             cfg.audit_out_path = next();
+        } else if (a == "--update-only") {
+            cfg.update_only = true;
         } else {
             SYMPSICA_REQUIRE(false, "party_main: unrecognized flag");
         }
     }
-    SYMPSICA_REQUIRE(have_role && have_addr && have_schedule && have_state && have_out && have_seed,
-                      "party_main: missing a required flag (--role/--listen|--connect/--schedule/"
-                      "--state/--out/--seed)");
+    // --update-only needs neither --listen/--connect nor --out (task-24-
+    // brief.md SC1/CG-A: it constructs no Channel and writes no JSONL
+    // records, since it never reaches a query day) -- every other flag
+    // (including --seed, unread in this mode, kept required for a uniform
+    // CLI contract) stays mandatory exactly as before.
+    SYMPSICA_REQUIRE(have_role && have_schedule && have_state && have_seed &&
+                          (cfg.update_only || (have_addr && have_out)),
+                      "party_main: missing a required flag (--role/--schedule/--state/--seed, "
+                      "plus --listen|--connect/--out unless --update-only)");
     cfg.address = cfg.is_server ? ("127.0.0.1:" + listen_port) : connect_addr;
     return cfg;
 }
@@ -495,6 +516,32 @@ int main(int argc, char** argv) {
     }
 
     const std::vector<ScheduleDay> schedule = parse_schedule(read_file(cfg.schedule_path));
+
+    // task-24-brief.md SC1/SC2/CG-A: zero-communication update-only mode.
+    // test/core/grep_guard_no_channel_update_only.sh scans the marked block
+    // immediately below for the bare token "Channel" (its own header
+    // comment explains why a bare-word scan, not a narrower "Channel("-style
+    // pattern) -- keep the block itself, and any string literal inside it,
+    // free of that token; this explanatory comment sits OUTSIDE the markers
+    // specifically so its own prose (which legitimately needs to say
+    // "Channel") is not itself scanned. Update::apply is independently
+    // proven Channel-free by the guard's second check: update.hpp/
+    // update.cpp (include/sympsica/protocols/update.hpp,
+    // src/protocols/update.cpp) never #include net.hpp at all, so the
+    // Channel type is not even nameable there.
+    if (cfg.update_only) {
+        // BEGIN-UPDATE-ONLY-NO-CHANNEL
+        for (const ScheduleDay& day : schedule) {
+            SYMPSICA_REQUIRE(!day.query,
+                              "party_main: --update-only mode forbids a query day in the schedule "
+                              "(a query needs network communication, which this mode never performs)");
+            Update::apply(st, day.insert_ids, day.delete_ids, params.encoder, params.oracle);
+        }
+        st.save(state_path);
+        std::cerr << "channel_construction_count=" << Channel::construction_count() << "\n";
+        return 0;
+        // END-UPDATE-ONLY-NO-CHANNEL
+    }
 
     std::unique_ptr<Channel> ch = connect_channel(cfg);
 

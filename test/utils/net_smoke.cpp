@@ -75,3 +75,29 @@ TEST(NetSmoke, LoopbackRoundTripAndByteCount) {
     EXPECT_EQ(server_bytes_sent, static_cast<u64>(kBufSize));
     EXPECT_EQ(client->bytes_sent(), static_cast<u64>(kBufSize));
 }
+
+// task-24-brief.md FC1 [CG-A non-vacuity]: proves Channel::construction_
+// count() CAN read nonzero -- a counter that never moves proves nothing.
+// This is the counterpart to test/e2e/run_cga_gate.py's own SC2 assertion
+// that the counter reads EXACTLY 0 after a zero-communication
+// --update-only party run; that Python driver cannot itself construct a
+// Channel (it never touches the C++ API), so this in-process leg is what
+// demonstrates the counter is a real, live signal rather than a constant
+// that always reads 0 regardless of what happens.
+TEST(NetSmoke, FC1_ChannelConstructionCounterIncrementsOnRealConstruction) {
+    const u64 before = Channel::construction_count();
+
+    std::thread server([&] { Channel ch(kAddress, /*is_server=*/true); });
+    auto client = connect_client_with_retry();
+    ASSERT_NE(client, nullptr) << "client failed to connect to loopback server";
+    server.join();
+
+    const u64 after = Channel::construction_count();
+    // Exactly 2 Channels were constructed in THIS test (one server, one
+    // client) -- other tests in this same binary may construct more
+    // Channels before or after this one runs (the counter is process-wide
+    // and never reset), so the assertion is a delta, not an absolute value.
+    EXPECT_EQ(after - before, 2u)
+        << "before=" << before << " after=" << after
+        << " -- Channel::construction_count() did not observe the two real constructions above";
+}

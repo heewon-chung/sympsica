@@ -36,6 +36,22 @@ public:
     Channel(const std::string& address, bool is_server);
     ~Channel();
 
+    // construction_count() — task-24-brief.md SC2/R6-CGA-RUNTIME: a
+    // process-wide, ALWAYS-COMPILED (no #ifdef) counter incremented once per
+    // Channel construction (net.cpp), regardless of whether that
+    // construction succeeds in connecting -- the count happens in the
+    // constructor body, so it also captures a construction attempt that
+    // later throws (coproto::asioConnect() throwing after the counter's own
+    // increment already ran, since the increment sits at the top of the
+    // constructor -- see net.cpp). Purely additive observability: nothing
+    // else about Channel's behavior changes. CG-A's runtime leg reads this
+    // (via a value printed by apps/party_main.cpp's --update-only mode) and
+    // asserts it is EXACTLY 0 after a zero-communication update-only run
+    // that never constructs a Channel at all -- the counter's own
+    // non-vacuity (that it CAN read nonzero) is separately demonstrated by
+    // test/utils/net_smoke.cpp, which constructs real Channels.
+    static u64 construction_count();
+
     Channel(const Channel&) = delete;
     Channel& operator=(const Channel&) = delete;
 
