@@ -3,9 +3,16 @@ build-*/
 vendor/
 
 # Local working documents (specs, plans, evidence, agent state) — never published
-.handoff/
-.superpowers/
-.omc/
-.agent/
-.claude/
-.codex/
+# NOTE: no trailing slash -- .agent/.claude/.codex are SYMLINKS into
+# ~/Documents/00-Research/, and a "dir/" pattern does not match a symlink.
+.handoff
+.superpowers
+.omc
+.agent
+.claude
+.codex
+
+# Python bytecode from the reference/gate scripts (ref/, test/e2e/,
+# test/kat_results/) -- not code, never published.
+__pycache__/
+*.pyc
