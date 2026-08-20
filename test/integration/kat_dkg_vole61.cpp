@@ -663,16 +663,38 @@ TEST(Vole61, BeaverTriplesCorrectnessOver10000Triples)
     // collision probability over 10^4 draws from a ~2^61 space is
     // astronomically small (~1e-11), so any large-scale collapse is a
     // reintroduction of the batch-wide-sharing bug, not sampling noise.
+    //
+    // task-27-brief.md Important #5/codex/phase-2-review.md: the ORIGINAL
+    // version of this block checked ONLY out[1].a (a_S). But beaver_triples's
+    // Sender branch draws a_S and b_S from TWO SEPARATE per-triple OLE calls
+    // (vole_beaver.cpp: ot1 -> b_S, ot2 -> a_S); a regression that collapses
+    // only the FIRST call (b_S) across triples while the second (a_S) stays
+    // correctly per-triple-independent would leave a_S all-distinct and this
+    // check green, even though exactly the batch-wide-sharing bug the ruling
+    // exists to catch would be live on b_S. The recorded task-6 mutation
+    // happened to collapse BOTH a_S and b_S together, so this one-sided gap
+    // was never exercised. b_S is now checked too, closing that gap.
     {
         std::vector<u64> a_S_values(kN);
         for (u64 i = 0; i < kN; ++i) a_S_values[i] = out[1].a[i].v;
         std::sort(a_S_values.begin(), a_S_values.end());
-        const auto distinct =
+        const auto distinct_a =
             static_cast<u64>(std::unique(a_S_values.begin(), a_S_values.end()) - a_S_values.begin());
-        EXPECT_GE(distinct, kN - 5)
-            << "Sender-side a_S collapsed to " << distinct << " distinct values out of " << kN
+        EXPECT_GE(distinct_a, kN - 5)
+            << "Sender-side a_S collapsed to " << distinct_a << " distinct values out of " << kN
             << " -- this is the batch-wide-sharing regression the independence check guards "
                "against (task-6 fix round 1)";
+
+        std::vector<u64> b_S_values(kN);
+        for (u64 i = 0; i < kN; ++i) b_S_values[i] = out[1].b[i].v;
+        std::sort(b_S_values.begin(), b_S_values.end());
+        const auto distinct_b =
+            static_cast<u64>(std::unique(b_S_values.begin(), b_S_values.end()) - b_S_values.begin());
+        EXPECT_GE(distinct_b, kN - 5)
+            << "Sender-side b_S collapsed to " << distinct_b << " distinct values out of " << kN
+            << " -- the a_S-only check above would have missed this (task-27-brief.md Important "
+               "#5): a one-sided regression on the FIRST per-triple OLE call (b_S) leaves a_S "
+               "fully independent and the check above green";
     }
 
     // Distribution sanity (non-gating, report-only): mean/variance of the
