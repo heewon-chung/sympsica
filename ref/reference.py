@@ -2261,7 +2261,16 @@ def _selftest_count() -> None:
         message = str(e)
     assert raised, "SC2: a bucket with true multiplicity 5 (> T_CAP=4) must raise AssertionError"
     assert "50" in message, f"SC2: abort message must name the offending bucket (50): {message!r}"
-    assert "5" in message, f"SC2: abort message must name the true multiplicity (5): {message!r}"
+    # task-28-brief.md carried finding C1 (Task 26 review): "50" CONTAINS
+    # "5", so the old `assert "5" in message` was subsumed by the check
+    # above and asserted nothing of its own -- exactly the R6-NOTAUTO
+    # vacuity pattern. "multiplicity 5" (the exact substring Ref.count's
+    # own f-string produces: "true multiplicity {true_mult} exceeds") is
+    # NOT a substring of "bucket 50 ...", so this is now independent of the
+    # bucket-name check above.
+    assert "multiplicity 5" in message, (
+        f"SC2: abort message must name the true multiplicity (5): {message!r}"
+    )
 
 
 _selftest_minors()  # module self-test (R-MIN): always runs, aborts via AssertionError on failure
