@@ -1,0 +1,5 @@
+{"scenario":"smoke","protocol":"bms24","variant":"add-only","func":"CA",
+ "n":65536,"u":64,"days":1,"daily_size":64,"start_size":65472,"del_size":0,
+ "network":"LAN","seed":0,"queries":1,"exec_mode":"docker","thread_regime":"runtime-helpers",
+ "image":"ghcr.io/ruidazeng/upsi-revisited@sha256:221cfc61a843c928a0fba256b85f35a5ace5dd7f1ff91e144359a8942144cd8d",
+ "state_dir":"/tmp/sympsica-bench/cache/bms24/65536_64_add-only","budget_s":3600}

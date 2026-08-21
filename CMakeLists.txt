@@ -604,6 +604,12 @@ add_test(NAME bench.Segments
     COMMAND python3 "${CMAKE_SOURCE_DIR}/bench/test_jsonl_check.py" TestSegments)
 set_tests_properties(bench.Segments PROPERTIES LABELS "bench" TIMEOUT 60)
 
+# bench.Acns2147Derived: the 2025/2147 Tables-3/4 transcription gate (48 DERIVED
+# rows under amendments A1/A3, byte-deterministic: sha256 ef4b2465...9539).
+add_test(NAME bench.Acns2147Derived
+    COMMAND python3 "${CMAKE_SOURCE_DIR}/baselines/acns2147/test_derived.py" TestDerived)
+set_tests_properties(bench.Acns2147Derived PROPERTIES LABELS "bench" TIMEOUT 60)
+
 # ---------------------------------------------------------------------------
 # task-24-brief.md W6.6(i)/R6-MASKSTAT: the one-shot 10^5-mask-uniformity
 # campaign generator. A standalone executable (same idiom as `party`/

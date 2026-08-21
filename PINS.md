@@ -215,6 +215,25 @@ dependency-resolution cache, analogous to `python3 build.py --setup`
 regenerating libOTe's own `config.h` files in-tree — not a change to the
 pinned commit's source).
 
+## Phase 8 — baseline images and sources (phase-8-plan.md)
+
+Re-verified 2026-08-21 (controller + Task 32 implementer); consumed by `baselines/bms24/`,
+`baselines/fastupsi/`, `baselines/kunlun/` (stub), and `baselines/acns2147/` (derived,
+transcription only — no source is built for it).
+
+| What | Pin |
+|---|---|
+| BMS+24 image | `ghcr.io/ruidazeng/upsi-revisited@sha256:221cfc61a843c928a0fba256b85f35a5ace5dd7f1ff91e144359a8942144cd8d` (amd64; 1,246,019,325 B; prebuilt; WorkingDir `/home/upsi-user`) |
+| BMS+24 source | `ruidazeng/upsi-revisited` @ `d6ddfb59bf068fdd702df118b4d3fbe0b36d866c` |
+| FastUPSI image | `ghcr.io/qqqqyyy/fastupsi@sha256:47610af00af65d354f8523305ab8bb61649d53bece2fcc7b989ce9c2f94da586` (index, linux/amd64 only; 446,586,115 B; prebuilt; WorkingDir `/home/fastupsi`) |
+| FastUPSI source | `qqqqyyy/FastUPSI` @ `86ab38ae8982d1b59b12b21acf37f4b583b9b3e2` (2026-04-13) |
+| Kunlun source | `yuchen1024/Kunlun` @ `395cf8ec48e73d9ab6906b51a85e2dbb41929b92` (NOT probed — R8-KUNLUN) |
+| volePSI source | `Visa-Research/volepsi` @ `ec76012ed516e25d3f460af9b8680e1140a5d491` (archived 2025-09-03) |
+| minisketch source | canonical **`bitcoin-core/minisketch`** @ `4a179c61e3cbe3ac2b3c027764ce8eb5183155e1` (2026-08-14, tip-at-spec-time, not a release; the handoff's `sipa/minisketch` URL is a 301 redirect — stale) |
+| eprint 2025/2147 PDF | SHA-256 `d479dccb9a7cee809321bce6c076e1d1d8fadaf015838222338ba1580686d172`, 701,656 B (`wc -c`), fetched 2026-08-21T01:49:40Z (NOT committed) |
+| ACNS 2147 live repo | `gitlab.eurecom.fr/project-spring-2025/PSI` main @ `39558fde926b999d569e7a20661e55e5753e0772` |
+| kunlun | NOT built (R8-KUNLUN); openssl tarball sha256: TBD at first build |
+
 ## CMake compatibility notes
 
 - Host used for verification: macOS ARM (Darwin 25.5). cmake was upgraded from the

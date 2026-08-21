@@ -1,0 +1,6 @@
+{"scenario":"smoke","protocol":"fastupsi","variant":"okvs","prot":"okvs",
+ "n":65536,"u":64,"days":1024,"add_size":64,"del_size":0,"start_size":0,"del":false,
+ "protocol_avg":"amortizedNn","network":"LAN","seed":0,"queries":1,"exec_mode":"docker",
+ "thread_regime":"runtime-helpers",
+ "image":"ghcr.io/qqqqyyy/fastupsi@sha256:47610af00af65d354f8523305ab8bb61649d53bece2fcc7b989ce9c2f94da586",
+ "state_dir":"/tmp/sympsica-bench/cache/fastupsi/65536_64_okvs","budget_s":3600}

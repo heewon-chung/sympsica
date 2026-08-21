@@ -21,8 +21,8 @@
 // 6 -- four rows (TV-F14..F17) had no subject code then; their subjects
 // were owned by later phases (.handoff/sympsica-plan.md's Phase->file
 // ownership table). This registry ships all 17 rows in exactly one of two
-// states: COVERED (16 rows, TV-F1..TV-F16 as of task-31B) or
-// DEFERRED-TO-PHASE-n (1 row, TV-F17), never silently absent.
+// states: COVERED (17 rows, TV-F1..TV-F17 as of task-32);
+// DEFERRED-TO-PHASE-n rows: none remain, never silently absent.
 // Each DEFERRED row names its owning phase
 // AND its missing subject file, and SC3's guard below asserts that file
 // is currently ABSENT -- a SELF-EXPIRING deferral: the moment a later
@@ -285,14 +285,19 @@ constexpr std::array<Row, 17> kRegistry{{
  "veth ends -- one-sided shaping halves it) -- producer exit=2",
  "", ""},
 
-{"TV-F17", RowState::kDeferred,
- "baselines/bms24/run.sh (uniform baseline wrapper contract, .handoff/sympsica-plan.md line 376: "
- "\"executable baselines/<name>/run.sh --config c.json\")",
- "feeding deletions to the BMS+24 add-only wrapper must REFUSE (explicit error, exit 2 + message "
- "per .handoff/sympsica-plan.md W8.1), never silently drop them; has no subject code at Phase 6 -- "
- "baselines/ is created in Phase 8. Path controller-CONFIRMED in fix round 1 (task-20-report.md)",
- "", "",
- "Phase 8", "baselines/bms24/run.sh"},
+{"TV-F17", RowState::kCovered,
+ "baselines/bms24/run.sh validate (add-only variant refuses del_size>0 without the explicit "
+ "\"delete_mode\":\"reinsert-accumulate\" opt-in) -- test/bench/fixtures/bms24_addonly_with_dels.json",
+ "the BMS+24 addition binaries have no delete concept at all, so deletions can only be dropped "
+ "by OUR wrapper: feeding them to the add-only wrapper REFUSES with exit 2 and a message naming "
+ "the required opt-in (never a silent drop); the Scenario-U add-only interpretation is an "
+ "explicit, footnoted config (plan W8.1). validate runs on any host. Real run in task-32-report.md",
+ "bash baselines/bms24/run.sh validate --config test/bench/fixtures/bms24_addonly_with_dels.json; "
+ "echo exit=$?",
+ "REAL run (macOS, 2026-08-21, task-32): "
+ "bms24-addonly: config contains deletions (del_size=64); REFUSING -- Scenario-U add-only runs "
+ "must set \"delete_mode\":\"reinsert-accumulate\" explicitly (TV-F17; plan W8.1) -- exit=2",
+ "", ""},
 }};
 // clang-format on
 
@@ -367,8 +372,8 @@ TEST(FSuite, Registry_PinnedCounts13Covered4Deferred) {
             ++deferred;
         }
     }
-    EXPECT_EQ(covered, 16u) << "Phase-8 target (task-31B): TV-F1..TV-F16 COVERED";
-    EXPECT_EQ(deferred, 1u) << "Phase-8 target: TV-F17 DEFERRED-TO-PHASE-8";
+    EXPECT_EQ(covered, 17u) << "Phase-8 target (task-32): all 17 rows COVERED";
+    EXPECT_EQ(deferred, 0u) << "Phase-8: no deferred rows remain";
 }
 
 // SC2: every COVERED row must carry a non-empty reproduction command and
