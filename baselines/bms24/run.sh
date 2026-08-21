@@ -177,9 +177,15 @@ action_run() {
   local t1
   t1=$(mono_ns)
 
-  wait_listen "$NS_S" "$port" 60 || exit $?
+  # A7 (controller ruling, task-32-report.md): 60 s was measured insufficient for bms24's
+  # tree-deserialization time on this VM (173 s observed for add-only n=2^16; add-del n=1024
+  # still not listening after 3+ min) -- wait_listen sits inside total_workload, strictly
+  # outside online (see C's boundary rule), so widening it cannot move any measured number,
+  # it only changes the give-up threshold. 600 s = ~3.5x headroom over the 173 s measurement,
+  # sized for Task 34's native-AWS run at n=2^20 (16x the elements) rather than this figure.
+  wait_listen "$NS_S" "$port" 600 || exit $?
   if [ "$variant" = "add-del" ]; then
-    wait_listen "$NS_S" 1025 60 || exit $?
+    wait_listen "$NS_S" 1025 600 || exit $?
   fi
 
   # W8.1 pinned 3 s stagger: max(readiness, 3 s) since party-1 launch.
