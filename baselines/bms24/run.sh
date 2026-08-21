@@ -178,14 +178,26 @@ action_run() {
   t1=$(mono_ns)
 
   # A7 (controller ruling, task-32-report.md): 60 s was measured insufficient for bms24's
-  # tree-deserialization time on this VM (173 s observed for add-only n=2^16; add-del n=1024
-  # still not listening after 3+ min) -- wait_listen sits inside total_workload, strictly
-  # outside online (see C's boundary rule), so widening it cannot move any measured number,
-  # it only changes the give-up threshold. 600 s = ~3.5x headroom over the 173 s measurement,
-  # sized for Task 34's native-AWS run at n=2^20 (16x the elements) rather than this figure.
-  wait_listen "$NS_S" "$port" 600 || exit $?
+  # tree-deserialization time on this VM (173 s observed for add-only n=2^16) -- wait_listen
+  # sits inside total_workload, strictly outside online (see C's boundary rule), so widening
+  # it cannot move any measured number, it only changes the give-up threshold. 600 s = ~3.5x
+  # headroom over the 173 s measurement, sized for Task 34's native-AWS run at n=2^20 (16x
+  # the elements) rather than this figure.
+  #
+  # DEADLOCK-BY-CONSTRUCTION FINDING (task-32-report.md), NOT a timeout question for
+  # add-del: party 1's deletion/run binds+listens on the GC port (1025) immediately/fast,
+  # independent of party 0 -- but its gRPC port ($port, 1026) does NOT open until AFTER the
+  # GC handshake with party 0 completes (empirically isolated with a real netns+DNAT pair:
+  # party 1 alone leaves 1026 closed and its process CPU-idle indefinitely; with party 0
+  # launched and connected via GC, 1026 opened ~14 s later). So for add-del, pre-waiting on
+  # $port before party 0 even exists can never succeed at ANY timeout -- the correct (and
+  # only possible) pre-launch readiness gate is the GC port. For add-only there is no GC
+  # channel at all, and $port genuinely does come up on its own (confirmed: party 1 alone
+  # prints "[PartyOne] listening" without party 0), so $port remains the right gate there.
   if [ "$variant" = "add-del" ]; then
     wait_listen "$NS_S" 1025 600 || exit $?
+  else
+    wait_listen "$NS_S" "$port" 600 || exit $?
   fi
 
   # W8.1 pinned 3 s stagger: max(readiness, 3 s) since party-1 launch.
