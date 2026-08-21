@@ -21,8 +21,8 @@
 // 6 -- four rows (TV-F14..F17) have no subject code yet; their subjects
 // are owned by later phases (.handoff/sympsica-plan.md's Phase->file
 // ownership table). This registry ships all 17 rows in exactly one of two
-// states: COVERED (14 rows, TV-F1..TV-F14 as of task-29) or
-// DEFERRED-TO-PHASE-n (3 rows, TV-F15..TV-F17), never silently absent.
+// states: COVERED (15 rows, TV-F1..TV-F14 + TV-F16 as of task-31A) or
+// DEFERRED-TO-PHASE-n (2 rows, TV-F15 + TV-F17), never silently absent.
 // Each DEFERRED row names its owning phase
 // AND its missing subject file, and SC3's guard below asserts that file
 // is currently ABSENT -- a SELF-EXPIRING deferral: the moment a later
@@ -262,14 +262,23 @@ constexpr std::array<Row, 17> kRegistry{{
  "", "",
  "Phase 8", "bench/measure.sh"},
 
-{"TV-F16", RowState::kDeferred,
- "bench/netem.sh (bench harness: netem delay applied once on loopback vs loopback traversing twice)",
- "the RTT calibration check (reads ~40ms vs target 80ms -> abort) has no subject code at Phase 6; "
- "per .handoff/sympsica-plan.md's Phase->file ownership table (line 547), bench/netem.sh is "
- "created in Phase 8. NOTE (task-20 finding, controller-CONFIRMED in fix round 1): same Phase "
- "8-vs-9 discrepancy as TV-F15, resolved the same way -- Phase 8 stands as recorded",
- "", "",
- "Phase 8", "bench/netem.sh"},
+{"TV-F16", RowState::kCovered,
+ "bench/netem.sh (--wrong-one-sided: TEST-ONLY flag shaping only one veth end; verify measures "
+ "ping RTT against the per-profile ROUND-TRIP target +/-10%)",
+ "the WAN profiles are stated as ROUND-TRIP 80 ms and applied as compensated ~40 ms per-"
+ "interface egress on BOTH veth ends; applying the per-direction delay on one side only (the "
+ "loopback-style misreading, FT12) halves the measured RTT (~43 ms: controller pre-measured "
+ "43.086 ms avg vs 84.037 ms both-ends on the colima VM, 2026-08-21), and netem.sh verify "
+ "ABORTS with exit 2 naming the target and the both-ends rule. Real run in task-31-report.md",
+ "colima ssh -p x86 -- bash -lc 'cd /Users/heewonchung/Documents/04-Dev/01-research/active/"
+ "symm-upsi-ca && sudo bash bench/netem.sh netns-up && sudo bash bench/netem.sh apply "
+ "--profile WAN200 --wrong-one-sided && sudo bash bench/netem.sh verify --profile WAN200 "
+ "--rtt-only'",
+ "REAL run (colima x86 VM, 2026-08-21, 31-A.2(c)): "
+ "WRONG-CONSTRUCTION: one-sided delay applied (TEST-ONLY) -- netem verify FAILED: profile "
+ "WAN200 measured RTT 42.374 ms outside 72.0..88.0 ms (target 80.0 ms; delay must sit on BOTH "
+ "veth ends -- one-sided shaping halves it) -- producer exit=2",
+ "", ""},
 
 {"TV-F17", RowState::kDeferred,
  "baselines/bms24/run.sh (uniform baseline wrapper contract, .handoff/sympsica-plan.md line 376: "
@@ -353,8 +362,8 @@ TEST(FSuite, Registry_PinnedCounts13Covered4Deferred) {
             ++deferred;
         }
     }
-    EXPECT_EQ(covered, 14u) << "Phase-7 target (task-29): TV-F1..TV-F14 COVERED";
-    EXPECT_EQ(deferred, 3u) << "Phase-7 target: TV-F15..TV-F17 DEFERRED-TO-PHASE-n";
+    EXPECT_EQ(covered, 15u) << "Phase-8 target (task-31A): TV-F1..TV-F14 + TV-F16 COVERED";
+    EXPECT_EQ(deferred, 2u) << "Phase-8 target: TV-F15, TV-F17 DEFERRED-TO-PHASE-8";
 }
 
 // SC2: every COVERED row must carry a non-empty reproduction command and
