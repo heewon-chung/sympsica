@@ -1,0 +1,4 @@
+{"scenario":"smoke","protocol":"volepsi","variant":"RR22-CA(convention)",
+ "n":65536,"u":64,"inter":65504,"network":"LAN","seed":0,"queries":1,"exec_mode":"docker",
+ "thread_regime":"runtime-helpers","image":"sha256:7a053c82c6ac4a89c47051cfc9a11efbc4ebfa33c316bed592eace05c171ef7d",
+ "state_dir":"/tmp/sympsica-bench/cache/volepsi/65536_64","budget_s":1800}

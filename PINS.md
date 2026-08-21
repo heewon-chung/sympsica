@@ -297,3 +297,48 @@ transcription only — no source is built for it).
   typically gates it behind `__STRICT_ANSI__`. So the plan's FC ("non-GNU dialect ->
   compile FAILS (W0.5)") does not actually hold on this host/toolchain combination;
   it may still hold with libstdc++ (e.g. the gcc:13 Linux leg, unverified here).
+
+## Task 33 (W8.4+W8.5) — native driver images, built by image ID (colima x86 VM)
+
+`baselines/volepsi/` and `baselines/minisketch/` are built locally on the colima `x86`
+VM from the pinned sources already recorded above (`volePSI source` /
+`minisketch source` rows); the images are executed BY DIGEST/local image ID
+everywhere (`smoke.json` `"image"`, `run.sh`'s `check_image_label` gate), never by
+tag — the tag (`sympsica/volepsi:ec76012`, `sympsica/minisketch:4a179c6`) is an
+informational alias only, matched against the `sympsica.source_sha` LABEL baked
+into each Dockerfile.
+
+| What | Pin |
+|---|---|
+| volepsi driver image ID (colima build, 2026-08-22) | `sha256:7a053c82c6ac4a89c47051cfc9a11efbc4ebfa33c316bed592eace05c171ef7d` (2.79 GB) |
+| minisketch driver image ID (colima build, 2026-08-21) | `sha256:99ec6bb3742a91dd44c4e282c64d9478ca9432bd111e443c8f5977e68305a83c` (840 MB) |
+
+Minisketch canonical-URL note (re-verified at Task 33 implementation time): cloning
+the handoff's original `https://github.com/sipa/minisketch` still succeeds — GitHub
+serves an HTTP 301 redirect to `https://github.com/bitcoin-core/minisketch`, so the
+old URL is not dead, only stale — but the Dockerfile clones the canonical
+`bitcoin-core/minisketch` URL directly (no redirect hop) per this file's earlier
+`minisketch source` pin. The checked-out commit `4a179c61e3cbe3ac2b3c027764ce8eb5183155e1`
+is tip-at-spec-time (2026-08-14), not a release.
+
+Two build-substrate gaps found by direct execution (real command output in
+task-33-report.md), both fixed as Dockerfile/CMakeLists.txt corrections — neither
+changes the pinned volePSI source commit or `rr22_driver.cpp`'s protocol logic:
+1. `baselines/volepsi/Dockerfile`'s apt-get line needed `libtool autoconf automake
+   pkg-config` added — cryptoTools's thirdparty fetch runs libsodium's own
+   `autogen.sh -s`, which hard-fails without the autotools toolchain.
+2. `baselines/volepsi/CMakeLists.txt`'s `find_package(volepsi ...)` /
+   `visa::volepsi` never resolve: volePSI's own installed CMake package is named
+   `volePSI` (mixed case) with exported target `visa::volePSI`, verified directly
+   against the built `/usr/local/lib/cmake/volePSI/{volePSIConfig,volePSITargets}.cmake`
+   — `find_package` is case-sensitive on Linux. Corrected to `find_package(volePSI
+   REQUIRED HINTS ${VOLEPSI_HINT})` / `target_link_libraries(rr22_driver
+   visa::volePSI)`.
+
+Operational finding (colima `x86` VM, informational): repeatedly `kill -9`-ing a
+`docker build` client mid-build (to recover from a stuck invocation) leaves its
+BuildKit session dangling server-side; enough accumulated dangling sessions over a
+long session degrade the daemon until new `docker build` invocations hang
+indefinitely in `futex_wait_queue` regardless of cache state. `docker builder prune
+-af` did not fix it; `sudo systemctl restart docker` did. Evidence and full timeline
+in task-33-report.md.

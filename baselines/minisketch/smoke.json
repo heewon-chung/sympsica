@@ -1,0 +1,4 @@
+{"scenario":"smoke","protocol":"minisketch","variant":"minisketch-symdiff",
+ "n":65536,"u":64,"inter":65504,"capacity":64,"network":"LAN","seed":0,"queries":1,
+ "exec_mode":"docker","thread_regime":"strict","image":"sha256:99ec6bb3742a91dd44c4e282c64d9478ca9432bd111e443c8f5977e68305a83c",
+ "state_dir":"/tmp/sympsica-bench/cache/minisketch/65536_64","budget_s":600}
