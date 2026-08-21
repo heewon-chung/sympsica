@@ -17,12 +17,12 @@
 // COVERED row was OBSERVED failing by a real ctest/python run in task-20.
 //
 // Controller ruling R6-FSUITE-17 (task-20-brief.md): the plan's SC
-// "failure suite 17/17 behaving as negatives" is not achievable at Phase
-// 6 -- four rows (TV-F14..F17) have no subject code yet; their subjects
-// are owned by later phases (.handoff/sympsica-plan.md's Phase->file
+// "failure suite 17/17 behaving as negatives" was not achievable at Phase
+// 6 -- four rows (TV-F14..F17) had no subject code then; their subjects
+// were owned by later phases (.handoff/sympsica-plan.md's Phase->file
 // ownership table). This registry ships all 17 rows in exactly one of two
-// states: COVERED (15 rows, TV-F1..TV-F14 + TV-F16 as of task-31A) or
-// DEFERRED-TO-PHASE-n (2 rows, TV-F15 + TV-F17), never silently absent.
+// states: COVERED (16 rows, TV-F1..TV-F16 as of task-31B) or
+// DEFERRED-TO-PHASE-n (1 row, TV-F17), never silently absent.
 // Each DEFERRED row names its owning phase
 // AND its missing subject file, and SC3's guard below asserts that file
 // is currently ABSENT -- a SELF-EXPIRING deferral: the moment a later
@@ -252,15 +252,20 @@ constexpr std::array<Row, 17> kRegistry{{
  "summary: Ran 1 test in 0.032s, FAILED (failures=1)",
  "", ""},
 
-{"TV-F15", RowState::kDeferred,
- "bench/measure.sh (bench harness: bytes reported as sent+received instead of per-party OUTGOING)",
- "the harness self-test (known 10 MB blob reads ~20 MB if sent+received) has no subject code at "
- "Phase 6; per .handoff/sympsica-plan.md's Phase->file ownership table (line 547), bench/measure.sh "
- "is created in Phase 8. NOTE (task-20 finding, controller-CONFIRMED in fix round 1): the "
- "controller's own initial ruling prose said \"Phase 9\" but confirmed Phase 8 is correct after "
- "checking the plan's own ownership table -- Phase 8 stands as recorded",
- "", "",
- "Phase 8", "bench/measure.sh"},
+{"TV-F15", RowState::kCovered,
+ "bench/measure.sh (selftest-bytes --wrong-sum-both: TEST-ONLY flag computing bytes as "
+ "sent+received on both interfaces) -- bench/jsonl_check.py validate_record",
+ "the harness self-test pushes a known 10485760-byte blob across the netns veth pair; the "
+ "correct per-party OUTGOING convention (FT11) reads ~10.5 MB (payload + ~4.6% framing, "
+ "window [10485760, 11534336] B); summing sent+received double-counts the blob to ~21 MB, "
+ "outside the window, and selftest-bytes ABORTS with exit 2. Real run in task-31-report.md",
+ "colima ssh -p x86 -- bash -lc 'cd /Users/heewonchung/Documents/04-Dev/01-research/active/"
+ "symm-upsi-ca && sudo bash bench/measure.sh selftest-bytes --wrong-sum-both'",
+ "REAL run (colima x86 VM, 2026-08-21, 31-B.6(b)): "
+ "HSTx1 FAILED: sent+received double-counts the one 10 MB blob: 21036746 B outside "
+ "[10485760,11534336] -- the field convention is per-party OUTGOING bytes (FT11) -- "
+ "producer exit=2",
+ "", ""},
 
 {"TV-F16", RowState::kCovered,
  "bench/netem.sh (--wrong-one-sided: TEST-ONLY flag shaping only one veth end; verify measures "
@@ -362,8 +367,8 @@ TEST(FSuite, Registry_PinnedCounts13Covered4Deferred) {
             ++deferred;
         }
     }
-    EXPECT_EQ(covered, 15u) << "Phase-8 target (task-31A): TV-F1..TV-F14 + TV-F16 COVERED";
-    EXPECT_EQ(deferred, 2u) << "Phase-8 target: TV-F15, TV-F17 DEFERRED-TO-PHASE-8";
+    EXPECT_EQ(covered, 16u) << "Phase-8 target (task-31B): TV-F1..TV-F16 COVERED";
+    EXPECT_EQ(deferred, 1u) << "Phase-8 target: TV-F17 DEFERRED-TO-PHASE-8";
 }
 
 // SC2: every COVERED row must carry a non-empty reproduction command and

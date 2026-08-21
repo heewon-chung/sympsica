@@ -1,0 +1,473 @@
+#!/usr/bin/env python3
+"""bench/jsonl_check.py -- Phase 8 W8.7 (phase-8-plan.md): the harness's pure
+record logic, shared by bench/measure.sh (emit/segments/config), the ctest
+gates bench.Schema/Counts/Segments (bench/test_jsonl_check.py), and HSTx3.
+Stdlib only. Every assertion message is prefixed "HST:" / "CFG:" and names
+the offending key so each is reachable by a one-field mutation (R6-NOTAUTO).
+
+Schema authority: .handoff/sympsica-plan.md lines 29-35 + controller
+amendments A1 (Codex round 1) and A3 (Codex round 2): env gains "DERIVED";
+DERIVED rows have r_out = s_out = 0 and total == external_total == published
+bytes, and carry the source's VERBATIM network label ("200 Mbps", with the
+space, never WAN200/50/5); measured LOCAL/AWS rows keep total == r_out + s_out
+== external_total; scenario gains exactly selftest | calib | derived.
+"""
+import argparse
+import datetime
+import hashlib
+import json
+import re
+import sys
+
+TOP_KEYS = {"ts", "env", "scenario", "config", "trial", "seed", "status",
+            "time_s", "bytes", "counters", "notes"}
+DERIVED_EXTRA_KEYS = {"measured", "source"}
+CONFIG_KEYS = {"n", "u", "network", "protocol", "variant"}
+TIME_KEYS = {"online", "offline", "total"}
+BYTES_KEYS = {"r_out", "s_out", "total", "external_total"}
+COUNTER_KEYS = {"triples", "rounds", "announced"}
+
+NETWORKS = {"LAN", "WAN200", "WAN50", "WAN5"}                 # measured rows
+NETWORKS_DERIVED = {"LAN", "200 Mbps", "50 Mbps", "5 Mbps"}    # DERIVED rows: VERBATIM source column labels (A1)
+SCENARIOS = {"S1", "S2", "S3", "U", "M0", "smoke",               # master plan line 30
+             "selftest", "calib", "derived"}                      # controller amendment A3 -- exactly these three additions
+STATUSES = {"ok", "timeout", "dnf", "error"}
+HSTX3_STATUSES = {"ok", "timeout", "dnf"}                     # master plan W8.7
+ENVS = {"LOCAL", "AWS", "DERIVED"}
+SEGMENTS = ("setup_once", "preprocessing", "online")
+MARKER_RE = re.compile(r"^PHASE:(total_workload|setup_once|preprocessing|online)_(begin|end):([0-9]+)$")
+MARKER_ORDER = ["total_workload_begin", "setup_once_begin", "setup_once_end",
+                "preprocessing_begin", "preprocessing_end", "online_begin",
+                "online_end", "total_workload_end"]
+
+
+def _is_int(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _is_num(v):
+    return (isinstance(v, (int, float))) and not isinstance(v, bool)
+
+
+def validate_record(rec):
+    assert isinstance(rec, dict), "HST: record is not a JSON object"
+    keys = set(rec.keys())
+    env = rec.get("env")
+    allowed = TOP_KEYS | (DERIVED_EXTRA_KEYS if env == "DERIVED" else set())
+    for k in sorted((TOP_KEYS | (DERIVED_EXTRA_KEYS if env == "DERIVED" else set())) - keys):
+        raise AssertionError("HST: missing top-level key '%s'" % k)
+    for k in sorted(keys - allowed):
+        raise AssertionError("HST: unknown top-level key '%s' (only DERIVED rows carry measured/source)" % k)
+    assert isinstance(rec["ts"], str) and len(rec["ts"]) >= 19, "HST: ts must be an iso8601 string"
+    assert env in ENVS, "HST: env '%s' not in %s" % (env, sorted(ENVS))
+    assert rec["scenario"] in SCENARIOS, "HST: scenario '%s' not in %s (A3)" % (rec["scenario"], sorted(SCENARIOS))
+    cfg = rec["config"]
+    assert isinstance(cfg, dict) and set(cfg.keys()) == CONFIG_KEYS, \
+        "HST: config keys must be exactly %s" % sorted(CONFIG_KEYS)
+    assert _is_int(cfg["n"]) and cfg["n"] > 0, "HST: config.n must be a positive int"
+    assert _is_int(cfg["u"]) and cfg["u"] >= 0, "HST: config.u must be a non-negative int"
+    if env == "DERIVED":
+        assert cfg["network"] in NETWORKS_DERIVED, \
+            "HST: DERIVED rows carry the source's verbatim network label %s, never a relabel onto an 80 ms profile (got '%s')" % (sorted(NETWORKS_DERIVED), cfg["network"])
+    else:
+        assert cfg["network"] in NETWORKS, "HST: config.network '%s' not in %s" % (cfg["network"], sorted(NETWORKS))
+    assert isinstance(cfg["protocol"], str) and cfg["protocol"], "HST: config.protocol must be a non-empty string"
+    assert isinstance(cfg["variant"], str) and cfg["variant"], "HST: config.variant must be a non-empty string"
+    assert _is_int(rec["trial"]) and rec["trial"] >= 0, "HST: trial must be a non-negative int"
+    assert _is_int(rec["seed"]) and rec["seed"] >= 0, "HST: seed must be a non-negative int"
+    assert rec["status"] in STATUSES, "HST: status '%s' not in %s" % (rec["status"], sorted(STATUSES))
+    t = rec["time_s"]
+    assert isinstance(t, dict) and set(t.keys()) == TIME_KEYS, "HST: time_s keys must be exactly %s" % sorted(TIME_KEYS)
+    for k in sorted(TIME_KEYS):
+        assert _is_num(t[k]), "HST: time_s.%s must be a number" % k
+        assert t[k] >= 0, "HST: time_s.%s must be >= 0" % k
+    b = rec["bytes"]
+    assert isinstance(b, dict) and set(b.keys()) == BYTES_KEYS, "HST: bytes keys must be exactly %s" % sorted(BYTES_KEYS)
+    for k in sorted(BYTES_KEYS):
+        assert _is_int(b[k]) and b[k] >= 0, "HST: bytes.%s must be a non-negative int" % k
+    if env == "DERIVED":
+        assert b["r_out"] == 0 and b["s_out"] == 0, \
+            "HST: DERIVED rows have no directional split: r_out and s_out must be 0 (A1)"
+        assert b["total"] == b["external_total"], \
+            "HST: DERIVED rows require bytes.total == external_total == published bytes (A1)"
+    else:
+        assert b["total"] == b["r_out"] + b["s_out"], \
+            "HST: bytes.total %d != r_out+s_out %d" % (b["total"], b["r_out"] + b["s_out"])
+        assert b["external_total"] == b["total"], \
+            "HST: bytes.external_total %d != bytes.total %d" % (b["external_total"], b["total"])
+    c = rec["counters"]
+    assert isinstance(c, dict) and set(c.keys()) == COUNTER_KEYS, "HST: counters keys must be exactly %s" % sorted(COUNTER_KEYS)
+    for k in sorted(COUNTER_KEYS):
+        assert _is_int(c[k]) and c[k] >= 0, "HST: counters.%s must be a non-negative int" % k
+    assert isinstance(rec["notes"], str), "HST: notes must be a string"
+    if env == "DERIVED":
+        assert rec["measured"] is False, "HST: DERIVED row requires 'measured': false"
+        assert rec["source"] == "ACNS26-Tables3-4", "HST: DERIVED row requires source 'ACNS26-Tables3-4'"
+
+
+def record_key(rec):
+    c = rec["config"]
+    return (rec["scenario"], c["protocol"], c["variant"], c["n"], c["u"], c["network"])
+
+
+def check_counts(records, expected_keys, trials):
+    """HSTx3: every expected (scenario, protocol, variant, n, u, network) has
+    exactly `trials` records with trial ids 0..trials-1 each exactly once, and
+    every status is in {ok, timeout, dnf}."""
+    seen = {}
+    for rec in records:
+        assert rec["status"] in HSTX3_STATUSES, \
+            "HST: status '%s' not allowed by HSTx3 (ok|timeout|dnf)" % rec["status"]
+        k = record_key(rec)
+        assert k in expected_keys, "HST: unexpected cell %s not in the expected set" % (k,)
+        slot = seen.setdefault(k, set())
+        assert rec["trial"] not in slot, "HST: duplicate record for %s trial %d" % (k, rec["trial"])
+        slot.add(rec["trial"])
+    for k in expected_keys:
+        got = seen.get(k, set())
+        assert got == set(range(trials)), \
+            "HST: expected cell %s has trials %s, wanted 0..%d exactly once" % (k, sorted(got), trials - 1)
+
+
+def parse_segments(stderr_text, allow_incomplete=False):
+    """Eight PHASE markers from ONE owner (the wrapper): returns
+    {"total": s, "setup_once": s, "preprocessing": s, "online": s, "_ns": {...}}.
+    With allow_incomplete=True (timeout/error synthesis) returns the present
+    marker ns values under "_ns" and sets absent segments to None."""
+    seen = {}
+    for line in stderr_text.splitlines():
+        m = MARKER_RE.match(line.strip())
+        if not m:
+            continue
+        name = "%s_%s" % (m.group(1), m.group(2))
+        assert name not in seen, "HST: marker %s appears more than once (markers have ONE owner: run.sh)" % name
+        seen[name] = int(m.group(3))
+    if not allow_incomplete:
+        for name in MARKER_ORDER:
+            assert name in seen, "HST: marker %s absent" % name
+        last = None
+        for name in MARKER_ORDER:
+            if last is not None:
+                assert seen[name] >= seen[last], "HST: markers not monotonic: %s (%d) < %s (%d)" % (name, seen[name], last, seen[last])
+            last = name
+        # (begin <= end per pair is implied by the monotonic check over MARKER_ORDER,
+        #  which lists every begin before its end -- no separate assertion.)
+    out = {"_ns": seen}
+    for seg, key in (("total_workload", "total"), ("setup_once", "setup_once"),
+                     ("preprocessing", "preprocessing"), ("online", "online")):
+        b, e = seen.get(seg + "_begin"), seen.get(seg + "_end")
+        out[key] = (e - b) / 1e9 if (b is not None and e is not None) else None
+    return out
+
+
+def divergence_flag(internal_b, external_b):
+    """FC: internal-vs-external divergence strictly greater than 5% flags the record."""
+    if external_b <= 0:
+        return False
+    return abs(internal_b - external_b) / float(external_b) > 0.05
+
+
+# --- wrapper config schemas (argv/keys are the wrapper contract, § G) -------
+COMMON_REQUIRED = {"scenario": str, "protocol": str, "variant": str, "n": int, "u": int,
+                   "network": str, "seed": int, "queries": int, "exec_mode": str,
+                   "image": str, "state_dir": str, "budget_s": int, "thread_regime": str}
+PER_PROTOCOL_REQUIRED = {
+    "bms24": {"func": str, "days": int, "daily_size": int, "start_size": int, "del_size": int},
+    "fastupsi": {"prot": str, "days": int, "add_size": int, "del_size": int, "start_size": int,
+                 "del": bool, "protocol_avg": str},
+    "kunlun": {"log_item_num": int},
+    "volepsi": {"inter": int},
+    "minisketch": {"inter": int, "capacity": int},
+    "selftest": {},
+}
+OPTIONAL_KEYS = {"delete_mode": str, "mem": str, "warmup": int}
+
+
+def validate_config(cfg):
+    assert isinstance(cfg, dict), "CFG: config is not a JSON object"
+    proto = cfg.get("protocol")
+    assert proto in PER_PROTOCOL_REQUIRED, "CFG: protocol '%s' not one of %s" % (proto, sorted(PER_PROTOCOL_REQUIRED))
+    required = dict(COMMON_REQUIRED)
+    required.update(PER_PROTOCOL_REQUIRED[proto])
+    for k in sorted(required):
+        assert k in cfg, "CFG: missing key '%s'" % k
+    for k in sorted(cfg):
+        assert k in required or k in OPTIONAL_KEYS, "CFG: unknown key '%s'" % k
+    for k, typ in sorted(list(required.items()) + [(k, v) for k, v in OPTIONAL_KEYS.items() if k in cfg]):
+        v = cfg[k]
+        if typ is int:
+            ok = _is_int(v)
+        elif typ is bool:
+            ok = isinstance(v, bool)
+        else:
+            ok = isinstance(v, str)
+        assert ok, "CFG: key '%s' must be %s" % (k, typ.__name__)
+    assert cfg["scenario"] in SCENARIOS, "CFG: scenario '%s' not in %s (A3)" % (cfg["scenario"], sorted(SCENARIOS))
+    assert cfg["network"] in NETWORKS, "CFG: network '%s' not in %s" % (cfg["network"], sorted(NETWORKS))
+    assert cfg["exec_mode"] in ("docker", "native"), "CFG: exec_mode must be docker|native"
+    assert cfg["thread_regime"] in ("strict", "runtime-helpers"), "CFG: thread_regime must be strict|runtime-helpers"
+    assert cfg["queries"] >= 1, "CFG: queries must be >= 1"
+    assert cfg["budget_s"] >= 1, "CFG: budget_s must be >= 1"
+    img = cfg["image"]
+    if cfg["exec_mode"] == "docker":
+        assert "@sha256:" in img or img.startswith("sha256:"), \
+            "CFG: docker image must be a registry digest ref (...@sha256:) or a local image ID (sha256:...), not a tag"
+
+
+def prepare_key(cfg):
+    """sha256 of the prepare-relevant config (network/budget/warmup/queries/seed removed)."""
+    sub = {k: v for k, v in cfg.items() if k not in ("network", "budget_s", "warmup", "queries", "seed")}
+    return hashlib.sha256(json.dumps(sub, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def complete_segments(segments, kill_ns):
+    """Timeout/error synthesis (C6): every segment whose begin was observed but
+    whose end was not gets end := kill_ns (the harness's kill/observe instant);
+    segments never begun stay 0.0 via build_record. Mutates and returns."""
+    ns = segments.get("_ns", {})
+    for seg, key in (("total_workload", "total"), ("setup_once", "setup_once"),
+                     ("preprocessing", "preprocessing"), ("online", "online")):
+        b, e = ns.get(seg + "_begin"), ns.get(seg + "_end")
+        if b is not None and e is None:
+            assert kill_ns >= b, "HST: kill_ns %d precedes %s_begin %d" % (kill_ns, seg, b)
+            segments[key] = (kill_ns - b) / 1e9
+            segments.setdefault("_synth", []).append(seg)
+    return segments
+
+
+# A6: the sampler's single output channel. Per side: {"state": "observed"|"unsampled",
+# "threads_max": int|None, "rss_kb": int|None}. /proc/<pid>/status line regexes (pinned):
+THREADS_RE = re.compile(r"^Threads:\s+([0-9]+)$")
+VMHWM_RE = re.compile(r"^VmHWM:\s+([0-9]+)\s+kB$")
+OBS_STATES = {"observed", "unsampled"}
+
+
+def validate_observations(obs):
+    assert isinstance(obs, dict) and set(obs.keys()) == {"r", "s"}, \
+        "HST: observations must have exactly sides r and s"
+    for side in ("r", "s"):
+        o = obs[side]
+        assert isinstance(o, dict) and set(o.keys()) == {"state", "threads_max", "rss_kb"}, \
+            "HST: observation keys must be exactly state/threads_max/rss_kb (side %s)" % side
+        assert o["state"] in OBS_STATES, "HST: observation state '%s' not in observed|unsampled" % o["state"]
+        if o["state"] == "observed":
+            assert _is_int(o["threads_max"]) and o["threads_max"] >= 1, \
+                "HST: observed side %s must carry threads_max >= 1" % side
+        else:
+            assert o["threads_max"] is None and o["rss_kb"] is None, \
+                "HST: unsampled side %s must carry null threads_max and rss_kb" % side
+        if o["rss_kb"] is not None:
+            assert _is_int(o["rss_kb"]) and o["rss_kb"] >= 0, "HST: rss_kb must be a non-negative int"
+
+
+def build_record(cfg, env, status, segments, r_out, s_out, obs, notes_tokens, trial, ts=None):
+    if ts is None:
+        ts = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    notes = list(notes_tokens)
+    # Thread policy = controller amendments A2 + A5 + A6 (post-hoc invalidation at emit;
+    # ONE channel: the per-side observation objects; null rss is OMITTED, never zero-filled).
+    validate_observations(obs)
+    regime = cfg["thread_regime"]
+    observed = {k: o for k, o in obs.items() if o["state"] == "observed"}
+    if observed:
+        notes.append("threads=" + ",".join("%s:%d" % (k, observed[k]["threads_max"]) for k in ("r", "s") if k in observed))
+    rss_parts = ["%s:%d" % (k, obs[k]["rss_kb"]) for k in ("r", "s") if obs[k]["rss_kb"] is not None]
+    if rss_parts:
+        notes.append("rss_kb=" + ",".join(rss_parts))
+    for side in ("r", "s"):
+        if obs[side]["state"] == "unsampled":
+            notes.append("party-pid-unsampled=%s" % side)
+            status = "error"
+    if regime == "strict":
+        bad = {k: o["threads_max"] for k, o in observed.items() if o["threads_max"] != 1}
+        if bad:
+            notes.append("threads_violation=" + ",".join("%s:%d" % (k, bad[k]) for k in ("r", "s") if k in bad))
+            status = "error"
+    else:
+        if any(o["threads_max"] > 1 for o in observed.values()):
+            notes.append("threads>1:runtime-helpers")
+    internal = None
+    for tok in notes_tokens:
+        if tok.startswith("internal_sent_b_r="):
+            internal = int(tok.split("=", 1)[1])
+    if internal is not None and divergence_flag(internal, r_out):
+        notes.append("bytes-divergence")
+    if segments.get("setup_once") is not None:
+        notes.append("setup_once_s=%.6f" % segments["setup_once"])
+    if segments.get("_synth"):
+        notes.append("segments-synthesized=" + ",".join(segments["_synth"]))
+        assert status in ("timeout", "error"), "HST: synthesized segments require status timeout|error"
+    rec = {
+        "ts": ts, "env": env, "scenario": cfg["scenario"],
+        "config": {"n": cfg["n"], "u": cfg["u"], "network": cfg["network"],
+                   "protocol": cfg["protocol"], "variant": cfg["variant"]},
+        "trial": trial, "seed": cfg["seed"], "status": status,
+        "time_s": {"online": float(segments.get("online") or 0.0),
+                   "offline": float(segments.get("preprocessing") or 0.0),
+                   "total": float(segments.get("total") or 0.0)},
+        "bytes": {"r_out": r_out, "s_out": s_out, "total": r_out + s_out, "external_total": r_out + s_out},
+        "counters": {"triples": 0, "rounds": 0, "announced": 0},
+        "notes": ";".join(notes),
+    }
+    validate_record(rec)
+    return rec
+
+
+def notes_tokens(rec):
+    return [t for t in rec["notes"].split(";") if t]
+
+
+def accept_record(rec, status="ok", expect=(), flags=(), expect_re=(), bytes_within=None,
+                  online_within=None, total_within=None, min_r_out=None, min_s_out=None):
+    """Executable acceptance gate for smokes/calibration (round-3 C2). Every
+    predicate is a fixed 'ACC:' message; `expect` = exact notes tokens that
+    must be present; `flags` = tokens that must be present (same check, named
+    separately in the message); ranges are inclusive."""
+    validate_record(rec)
+    assert rec["status"] == status, "ACC: status '%s' != required '%s'" % (rec["status"], status)
+    toks = notes_tokens(rec)
+    for e in expect:
+        assert e in toks, "ACC: required notes token '%s' absent (notes=%r)" % (e, rec["notes"])
+    for f in flags:
+        assert f in toks, "ACC: required flag '%s' absent" % f
+    for rx in expect_re:
+        assert any(re.fullmatch(rx, t) for t in toks), \
+            "ACC: no notes token matches /%s/ (notes=%r)" % (rx, rec["notes"])
+    b = rec["bytes"]; t = rec["time_s"]
+    if bytes_within is not None:
+        lo, hi = bytes_within
+        assert lo <= b["total"] <= hi, "ACC: bytes.total %d outside [%d, %d]" % (b["total"], lo, hi)
+    if online_within is not None:
+        lo, hi = online_within
+        assert lo <= t["online"] <= hi, "ACC: time_s.online %s outside [%s, %s]" % (t["online"], lo, hi)
+    if total_within is not None:
+        lo, hi = total_within
+        assert lo <= t["total"] <= hi, "ACC: time_s.total %s outside [%s, %s]" % (t["total"], lo, hi)
+    assert t["total"] >= t["online"], "ACC: time_s.total %s < time_s.online %s" % (t["total"], t["online"])
+    if min_r_out is not None:
+        assert b["r_out"] >= min_r_out, "ACC: bytes.r_out %d < %d" % (b["r_out"], min_r_out)
+    if min_s_out is not None:
+        assert b["s_out"] >= min_s_out, "ACC: bytes.s_out %d < %d" % (b["s_out"], min_s_out)
+
+
+def _range(text):
+    lo, hi = text.split(",")
+    return (float(lo), float(hi)) if ("." in lo or "." in hi) else (int(lo), int(hi))
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("validate"); p.add_argument("--file", required=True)
+    p = sub.add_parser("counts"); p.add_argument("--file", required=True)
+    p.add_argument("--expect", action="append", required=True,
+                   help="scenario;protocol;variant;n;u;network")
+    p.add_argument("--trials", type=int, required=True)
+    p = sub.add_parser("segments"); p.add_argument("--stderr", required=True)
+    p.add_argument("--allow-incomplete", action="store_true")
+    p = sub.add_parser("config"); p.add_argument("--file", required=True)
+    p.add_argument("--get", default=None)
+    p.add_argument("--prepare-key", action="store_true")
+    p = sub.add_parser("accept"); p.add_argument("--file", required=True)
+    p.add_argument("--line", type=int, default=-1, help="1-based record line; default: last")
+    p.add_argument("--status", default="ok"); p.add_argument("--expect", action="append", default=[])
+    p.add_argument("--flag", action="append", default=[]); p.add_argument("--expect-re", action="append", default=[])
+    p.add_argument("--bytes-within", default=None); p.add_argument("--online-within", default=None)
+    p.add_argument("--total-within", default=None)
+    p.add_argument("--min-r-out", type=int, default=None); p.add_argument("--min-s-out", type=int, default=None)
+    p.add_argument("--count", type=int, default=None, help="require exactly this many records in the file")
+    p = sub.add_parser("emit")
+    p.add_argument("--config", required=True); p.add_argument("--env", required=True)
+    p.add_argument("--status", required=True); p.add_argument("--segments", required=True)
+    p.add_argument("--r-out", type=int, required=True); p.add_argument("--s-out", type=int, required=True)
+    p.add_argument("--observations", required=True, help="path to the sampler's threads.json (A6)")
+    p.add_argument("--partial", default=None); p.add_argument("--trial", type=int, required=True)
+    p.add_argument("--ts", default=None); p.add_argument("--out", required=True)
+    p.add_argument("--token", action="append", default=[],
+                   help="extra notes token added by the harness (e.g. delete_mode=...; thread tokens are NOT passed here -- build_record derives them from --observations)")
+    p.add_argument("--kill-ns", type=int, default=None,
+                   help="timeout/error only: monotonic ns at which the harness killed/observed the wrapper")
+    a = ap.parse_args(argv)
+    try:
+        if a.cmd == "validate":
+            with open(a.file) as f:
+                for i, line in enumerate(f, 1):
+                    if not line.strip():
+                        continue
+                    try:
+                        validate_record(json.loads(line))
+                    except AssertionError as e:
+                        raise AssertionError("%s (line %d)" % (e, i))
+            print("validate OK: %s" % a.file)
+        elif a.cmd == "counts":
+            with open(a.file) as f:
+                recs = [json.loads(l) for l in f if l.strip()]
+            keys = []
+            for e in a.expect:
+                s, pr, va, n, u, nw = e.split(";")
+                keys.append((s, pr, va, int(n), int(u), nw))
+            check_counts(recs, keys, a.trials)
+            print("counts OK: %d records, %d cells x %d trials" % (len(recs), len(keys), a.trials))
+        elif a.cmd == "segments":
+            with open(a.stderr) as f:
+                seg = parse_segments(f.read(), allow_incomplete=a.allow_incomplete)
+            print(json.dumps(seg))
+        elif a.cmd == "config":
+            with open(a.file) as f:
+                cfg = json.load(f)
+            validate_config(cfg)
+            if a.prepare_key:
+                print(prepare_key(cfg))
+            elif a.get is not None:
+                v = cfg.get(a.get, "")
+                print(str(v).lower() if isinstance(v, bool) else v)
+            else:
+                print("config OK: %s" % a.file)
+        elif a.cmd == "accept":
+            with open(a.file) as f:
+                recs = [json.loads(l) for l in f if l.strip()]
+            assert recs, "ACC: no records in %s" % a.file
+            if a.count is not None:
+                assert len(recs) == a.count, "ACC: %d records in %s, required exactly %d" % (len(recs), a.file, a.count)
+            rec = recs[a.line - 1] if a.line > 0 else recs[-1]
+            accept_record(rec, a.status, a.expect, a.flag, a.expect_re,
+                          _range(a.bytes_within) if a.bytes_within else None,
+                          _range(a.online_within) if a.online_within else None,
+                          _range(a.total_within) if a.total_within else None,
+                          a.min_r_out, a.min_s_out)
+            print("accept OK: %s (status=%s, %d expects, %d flags)" % (a.file, a.status, len(a.expect), len(a.flag)))
+        elif a.cmd == "emit":
+            with open(a.config) as f:
+                cfg = json.load(f)
+            validate_config(cfg)
+            with open(a.segments) as f:
+                segments = json.load(f)
+            if a.kill_ns is not None:
+                segments = complete_segments(segments, a.kill_ns)
+            tokens = []
+            if a.partial:
+                try:
+                    with open(a.partial) as f:
+                        tokens = list(json.load(f).get("notes_tokens", []))
+                except (OSError, ValueError):
+                    tokens = ["partial-missing"]
+            else:
+                tokens = ["partial-missing"]
+            if cfg["protocol"] != "selftest":   # every live baseline: counters are not externally observable
+                tokens.append("counters=na")
+            tokens.extend(a.token)
+            with open(a.observations) as f:
+                obs = json.load(f)
+            rec = build_record(cfg, a.env, a.status, segments, a.r_out, a.s_out,
+                               obs, tokens, a.trial, a.ts)
+            with open(a.out, "a") as f:
+                f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+            print("emit OK: trial %d status %s -> %s" % (a.trial, a.status, a.out))
+    except AssertionError as e:
+        sys.stderr.write("%s\n" % e)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

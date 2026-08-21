@@ -16,3 +16,8 @@ vendor/
 # test/kat_results/) -- not code, never published.
 __pycache__/
 *.pyc
+
+# Phase 8 (phase-8-plan.md): baseline build/state artifacts -- never committed
+baselines/*/cache/
+baselines/*/upstream/
+results/

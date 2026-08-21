@@ -587,6 +587,24 @@ add_test(NAME data.GenBase
 set_tests_properties(data.GenBase PROPERTIES LABELS "data" TIMEOUT 180)
 
 # ---------------------------------------------------------------------------
+# Phase 8 W8.7 (phase-8-plan.md): harness logic gates. Stdlib-only python3
+# unittest over bench/jsonl_check.py's pure functions (schema validator incl.
+# controller amendment A1, HSTx3 record-count invariant, eight-marker segment
+# parser, strict-5% divergence). Platform-independent inline fixtures; the
+# live counterparts (HSTx1, netem verify, selftest-state) run in the colima
+# VM / on AWS and are recorded as R6-NOTAUTO evidence in the task reports.
+# ---------------------------------------------------------------------------
+add_test(NAME bench.Schema
+    COMMAND python3 "${CMAKE_SOURCE_DIR}/bench/test_jsonl_check.py" TestSchema)
+set_tests_properties(bench.Schema PROPERTIES LABELS "bench" TIMEOUT 60)
+add_test(NAME bench.Counts
+    COMMAND python3 "${CMAKE_SOURCE_DIR}/bench/test_jsonl_check.py" TestCounts)
+set_tests_properties(bench.Counts PROPERTIES LABELS "bench" TIMEOUT 60)
+add_test(NAME bench.Segments
+    COMMAND python3 "${CMAKE_SOURCE_DIR}/bench/test_jsonl_check.py" TestSegments)
+set_tests_properties(bench.Segments PROPERTIES LABELS "bench" TIMEOUT 60)
+
+# ---------------------------------------------------------------------------
 # task-24-brief.md W6.6(i)/R6-MASKSTAT: the one-shot 10^5-mask-uniformity
 # campaign generator. A standalone executable (same idiom as `party`/
 # `crash_probe` above, not a gtest binary -- test/campaign/mask_campaign_gen.cpp

@@ -1,0 +1,3 @@
+{"scenario":"selftest","protocol":"selftest","variant":"harness","n":1,"u":0,
+ "network":"LAN","seed":0,"queries":1,"exec_mode":"native","thread_regime":"strict",
+ "image":"none","state_dir":"/tmp/sympsica-bench/cache/selftest","budget_s":60,"warmup":1}
