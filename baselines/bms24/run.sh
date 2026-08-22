@@ -48,11 +48,15 @@
 # shaping is INERT for bms24 rows. The shaping of record for bms24 is the
 # `lo` qdisc this wrapper applies (bms_lo_apply_netem below); a reader
 # should not assume a bms24 row's profile shaping came from the standard
-# veth path. That same generic step also sends 20 real ICMP pings on the
-# veth pair to measure base RTT (regardless of protocol), which is why
-# jsonl_check.py's combined-loopback byte check tolerates a small
-# VETH_CALIBRATION_NOISE_MAX_B ceiling rather than requiring the veth deltas
-# to be exactly zero (see that file for the measured magnitude).
+# veth path. The veth pair is not perfectly silent even so (real, if small,
+# byte deltas), which is why jsonl_check.py's combined-loopback byte check
+# tolerates a small VETH_CALIBRATION_NOISE_MAX_B ceiling rather than
+# requiring the veth deltas to be exactly zero -- see that file for the
+# measured provenance (M1, gate fix round 1: it is IPv6 router/neighbor
+# solicitation and multicast-listener-report traffic from interface bring-up,
+# NOT the base-RTT calibration pings a prior comment here incorrectly named;
+# measure.sh snapshots the veth counters only after those pings already
+# finished, so they cannot appear in the delta at all).
 set -u
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -89,6 +93,11 @@ bms_lo_up() {  # $1=image $2=mem (may be empty)
   mkdir -p /var/run/netns
   ln -sfT "/proc/$pid_r/ns/net" "/var/run/netns/$BMS_LO_NS"
   ip netns exec "$BMS_LO_NS" ip link set lo up
+  # Task 1 (gate fix round 1, C1): `lo` defaults to MTU 65536, which gives it a
+  # much higher un-shaped throughput cap (MTU*8/delay) than the standard veth
+  # pair's 1500 -- set BEFORE any shaping so bms24's packetisation matches the
+  # substrate the standard calibration measured.
+  ip netns exec "$BMS_LO_NS" ip link set lo mtu 1500
 }
 
 bms_lo_measure_base_us() {  # $1=ping count -> integer microseconds (real loopback RTT); exit 5 on unparseable ping
@@ -106,40 +115,185 @@ bms_lo_measure_base_us() {  # $1=ping count -> integer microseconds (real loopba
   python3 -c 'import sys; print(int(round(float(sys.argv[1]) * 1000)))' "$avg_ms"
 }
 
-bms_lo_apply_netem() {  # $1=profile (LAN|WAN200|WAN50|WAN5) -- shapes `lo`, not veth; exit 5 on any failure
-  local profile=$1 base_us delay_us
+bms_lo_apply_netem() {  # $1=profile (LAN|WAN200|WAN50|WAN5) $2=port [$3=--wrong-combined-netem]
+  # Shapes `lo`, not veth; exit 5 on any failure.
+  #
+  # I1 (gate fix round 1): a single aggregate limiter on `lo` is NOT the same
+  # substrate as the standard harness's two independent per-party egress
+  # limiters (one full-duplex rate available in EACH direction). This function
+  # keys on the party-1 listen port ($2, the wrapper's own `port` variable --
+  # 10501 for add-only, 1026 for add-del) to classify traffic by direction:
+  #   dport == port  -- r (party 0, dialer) -> s (party 1, listener) -- class 1:10
+  #   sport == port  -- s -> r                                        -- class 1:20
+  #   anything else (the GC channel on add-del, etc.)                 -- class 1:30
+  # `tc prio` does pure classification (no rate metering of its own -- an
+  # `htb` root here was measured to under-deliver by ~30% under this delayed,
+  # classified-loopback traffic pattern, see the task report); the per-class
+  # child is netem(delay)+tbf(rate), the SAME split apply_split_shaper
+  # (bench/lib.sh, Task 1) uses on a whole device -- applied per class instead
+  # of per device because I1 requires the rate to be independent PER
+  # DIRECTION, which a single whole-device apply_split_shaper call cannot
+  # provide. Burst/latency are sized to ~one full RTT (2*delay_us) at the
+  # profile rate, not apply_split_shaper's rate/250 constant: netem's delay is
+  # fixed (unjittered), so it releases a whole RTT's worth of queued packets
+  # in one batch, and a bucket sized for a single 250 Hz tick (right for the
+  # veth pair's UNCLASSIFIED single-flow-per-device path) drops/retransmits
+  # that batch on this shared, classified `lo` path (measured: rate/250 burst
+  # -> WAN200 forward 174.2 Mbit / simultaneous reverse 137.0 Mbit, both
+  # outside the 180-220 Mbit window; RTT-sized burst -> both inside).
+  local profile=$1 port=$2 wrong_combined=0
+  [ "${3:-}" = "--wrong-combined-netem" ] && wrong_combined=1
+  local base_us delay_us
   ip netns exec "$BMS_LO_NS" tc qdisc del dev lo root 2>/dev/null || true
   base_us=$(bms_lo_measure_base_us 20) || return $?
   delay_us=$(( (${PROFILE_RTT_US[$profile]} - base_us) / 2 ))
   [ "$delay_us" -lt 0 ] && delay_us=0
-  ip netns exec "$BMS_LO_NS" tc qdisc replace dev lo root netem delay ${delay_us}us rate ${PROFILE_RATE_KBIT[$profile]}kbit limit "$LIMIT" || {
-    echo "bms_lo_apply_netem: tc qdisc replace failed for profile $profile (delay ${delay_us}us rate ${PROFILE_RATE_KBIT[$profile]}kbit)" >&2
+  local rate_kbit=${PROFILE_RATE_KBIT[$profile]}
+  local limit=${LIMIT:-10000}
+
+  if [ "$wrong_combined" = 1 ]; then
+    # Task 4 (C1, R6-NOTAUTO): TEST-ONLY -- verbatim the pre-fix defective
+    # construction (bench/aws/run_calib.sh wires this into PHASE 2; never
+    # called by a real trial).
+    echo "WRONG-CONSTRUCTION: combined netem delay+rate on lo (TEST-ONLY, --wrong-combined-netem)" >&2
+    ip netns exec "$BMS_LO_NS" tc qdisc replace dev lo root netem delay ${delay_us}us rate ${rate_kbit}kbit limit "$limit" || {
+      echo "bms_lo_apply_netem: tc qdisc replace (wrong-combined, TEST-ONLY) failed for profile $profile" >&2
+      return 5
+    }
+    return 0
+  fi
+
+  # burst = max(rate/250-tick floor, one-RTT-at-rate) -- at near-zero delay
+  # (LAN) the RTT term collapses towards 0, so the rate/250 term (the SAME
+  # floor apply_split_shaper uses -- e.g. 500000 B at 1 Gbit) still has to
+  # carry the bucket; at high delay (WAN*) the RTT term dominates and is what
+  # the classified-loopback path needs (see the function header comment).
+  # Measured: RTT-term-only burst -- LAN forward capped at 310 Mbit (well
+  # outside the 900-1100 Mbit window) because it floored to the 3000 B
+  # minimum instead of 500000 B.
+  local burst_tick=$(( rate_kbit * 1000 / 8 / 250 ))
+  local burst_rtt=$(( rate_kbit * 1000 / 8 * 2 * delay_us / 1000000 ))
+  local burst_bytes=$(( burst_tick > burst_rtt ? burst_tick : burst_rtt ))
+  [ "$burst_bytes" -lt 3000 ] && burst_bytes=3000
+  local latency_ms=$(( 2 * delay_us / 1000 ))
+  [ "$latency_ms" -lt 50 ] && latency_ms=50
+
+  {
+    ip netns exec "$BMS_LO_NS" tc qdisc replace dev lo root handle 1: prio bands 3 priomap 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 &&
+    ip netns exec "$BMS_LO_NS" tc qdisc add dev lo parent 1:1 handle 10: netem delay ${delay_us}us limit "$limit" &&
+    ip netns exec "$BMS_LO_NS" tc qdisc add dev lo parent 10: handle 100: tbf rate ${rate_kbit}kbit burst ${burst_bytes} latency ${latency_ms}ms &&
+    ip netns exec "$BMS_LO_NS" tc qdisc add dev lo parent 1:2 handle 20: netem delay ${delay_us}us limit "$limit" &&
+    ip netns exec "$BMS_LO_NS" tc qdisc add dev lo parent 20: handle 200: tbf rate ${rate_kbit}kbit burst ${burst_bytes} latency ${latency_ms}ms &&
+    ip netns exec "$BMS_LO_NS" tc qdisc add dev lo parent 1:3 handle 30: netem delay ${delay_us}us limit "$limit" &&
+    ip netns exec "$BMS_LO_NS" tc qdisc add dev lo parent 30: handle 300: tbf rate ${rate_kbit}kbit burst ${burst_bytes} latency ${latency_ms}ms &&
+    ip netns exec "$BMS_LO_NS" tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip dport "$port" 0xffff flowid 1:1 &&
+    ip netns exec "$BMS_LO_NS" tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$port" 0xffff flowid 1:2
+  } || {
+    echo "bms_lo_apply_netem: tc construction (per-direction) failed for profile $profile port $port (delay ${delay_us}us rate ${rate_kbit}kbit)" >&2
     return 5
   }
-  # C4: STRUCTURAL check of the ACTUAL applied qdisc before any party launches -- trusting
-  # tc's own exit code alone is not enough (a silent no-op or partial apply would still
-  # exit 0); this reads back what the kernel actually holds and compares against what we
-  # asked for, the same regex/unit-multiplier convention bench/netem.sh's own
-  # verify_structural uses for the veth pair.
-  local dump
-  dump=$(ip netns exec "$BMS_LO_NS" tc qdisc show dev lo 2>&1)
-  python3 - "$dump" "${PROFILE_RATE_KBIT[$profile]}" <<'PYEOF'
+
+  # C4/Task 2: STRUCTURAL check of the ACTUAL applied qdisc/class/filter tree
+  # before any party launches -- necessary but not sufficient (it catches
+  # no-op/partial apply, not a mis-shaped-but-present construction); Task 3's
+  # bms_lo_verify_throughput adds the real measurement this alone cannot
+  # provide (that is precisely what C1 found missing).
+  local dump_q dump_c dump_f
+  dump_q=$(ip netns exec "$BMS_LO_NS" tc qdisc show dev lo 2>&1)
+  dump_c=$(ip netns exec "$BMS_LO_NS" tc class show dev lo 2>&1)
+  dump_f=$(ip netns exec "$BMS_LO_NS" tc filter show dev lo parent 1: 2>&1)
+  python3 - "$dump_q" "$dump_f" "$rate_kbit" "$port" <<'PYEOF'
 import re, sys
-dump, want_rate_kbit = sys.argv[1], int(sys.argv[2])
-if "netem" not in dump:
-    sys.stderr.write("bms_lo_apply_netem: structural check FAILED -- no netem qdisc on lo: %r\n" % dump)
+dump_q, dump_f, want_rate_kbit, port = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+def fail(msg):
+    sys.stderr.write("bms_lo_apply_netem: structural check FAILED -- %s\n" % msg)
     sys.exit(1)
-m = re.search(r"rate ([0-9.]+)([KMG]?)bit", dump)
-if not m:
-    sys.stderr.write("bms_lo_apply_netem: structural check FAILED -- no rate present in qdisc dump: %r\n" % dump)
-    sys.exit(1)
-mult = {"": 1, "K": 1000, "M": 1000000, "G": 1000000000}[m.group(2)]
-got_kbit = (float(m.group(1)) * mult) / 1000.0
-if abs(got_kbit - want_rate_kbit) > 0.01 * want_rate_kbit:
-    sys.stderr.write("bms_lo_apply_netem: structural check FAILED -- qdisc rate %.1f kbit != expected %d kbit\n" % (got_kbit, want_rate_kbit))
-    sys.exit(1)
+if "prio" not in dump_q:
+    fail("no prio root qdisc: %r" % dump_q)
+mult = {"": 1, "K": 1000, "M": 1000000, "G": 1000000000}
+for parent, handle in (("1:1", "10:"), ("1:2", "20:"), ("1:3", "30:")):
+    if not re.search(r"netem %s parent %s" % (re.escape(handle), re.escape(parent)), dump_q):
+        fail("no netem qdisc %s parented to %s: %r" % (handle, parent, dump_q))
+    m = re.search(r"tbf [0-9]+: parent %s.*?rate ([0-9.]+)([KMG]?)bit" % re.escape(handle), dump_q)
+    if not m:
+        fail("no tbf child of %s with a rate: %r" % (handle, dump_q))
+    got_kbit = (float(m.group(1)) * mult[m.group(2)]) / 1000.0
+    if abs(got_kbit - want_rate_kbit) > 0.01 * want_rate_kbit:
+        fail("tbf child of %s rate %.1f kbit != expected %d kbit" % (handle, got_kbit, want_rate_kbit))
+# tc's default u32 dump has no human-readable dport/sport text; it prints the
+# raw 32-bit match word instead -- dport 0xPPPP sits in the low half (mask
+# 0000ffff), sport in the high half (mask ffff0000) of the word at offset 20.
+port_hex = "%04x" % int(port)
+if not re.search(r"match 0000%s/0000ffff at 20" % port_hex, dump_f, re.I):
+    fail("no dport %s filter (flowid 1:1): %r" % (port, dump_f))
+if not re.search(r"match %s0000/ffff0000 at 20" % port_hex, dump_f, re.I):
+    fail("no sport %s filter (flowid 1:2): %r" % (port, dump_f))
+if "flowid 1:1" not in dump_f or "flowid 1:2" not in dump_f:
+    fail("filter flowid assignment missing: %r" % dump_f)
 PYEOF
   [ $? -eq 0 ] || return 5
+}
+
+bms_lo_verify_throughput() {  # $1=profile $2=port -- REAL measured throughput on `lo`, both
+  # directions and simultaneously (Task 3, C1/I1): the structural read-back
+  # above cannot detect a present-but-wrong-shape construction (that is
+  # exactly how the pre-fix combined netem+rate passed its own structural
+  # check). exit 5 on any failure.
+  local profile=$1 port=$2
+  local rate_kbit=${PROFILE_RATE_KBIT[$profile]}
+  local win_lo win_hi
+  win_lo=$(python3 -c "print(int($rate_kbit*0.90))")
+  win_hi=$(python3 -c "print(int($rate_kbit*1.10))")
+
+  _bms_lo_iperf_server_ready() {
+    local i
+    for i in $(seq 1 25); do
+      ip netns exec "$BMS_LO_NS" ss -ltn 2>/dev/null | grep -q ":$port " && return 0
+      sleep 0.2
+    done
+    return 1
+  }
+  _bms_lo_read_sum_sent_kbit() {  # $1=json $2=key ("sum_sent"|"sum_sent_bidir_reverse")
+    python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(int(round(d["end"][sys.argv[2]]["bits_per_second"]/1000.0)))' "$1" "$2"
+  }
+  _bms_lo_check_window() {  # $1=label $2=kbit
+    if [ "$2" -lt "$win_lo" ] || [ "$2" -gt "$win_hi" ]; then
+      echo "bms_lo_verify_throughput FAILED: profile $profile $1 throughput $2 kbit outside ${win_lo}..${win_hi} kbit (profile rate $rate_kbit kbit)" >&2
+      return 1
+    fi
+  }
+
+  # forward: client dials server:$port -- classified dport==$port -> class 1:10
+  ip netns exec "$BMS_LO_NS" iperf3 -s -1 -p "$port" >/dev/null 2>&1 &
+  _bms_lo_iperf_server_ready || { echo "bms_lo_verify_throughput: iperf3 server not ready on port $port (forward) after 5 s" >&2; return 5; }
+  local json_fwd kbit_fwd
+  json_fwd=$(ip netns exec "$BMS_LO_NS" iperf3 -c 127.0.0.1 -p "$port" -t 10 -O 2 -J) || { echo "bms_lo_verify_throughput: forward iperf3 client failed" >&2; return 5; }
+  kbit_fwd=$(_bms_lo_read_sum_sent_kbit "$json_fwd" sum_sent)
+  _bms_lo_check_window forward "$kbit_fwd" || return 5
+
+  # reverse: -R -- server sends, client receives; classified sport==$port -> class 1:20
+  ip netns exec "$BMS_LO_NS" iperf3 -s -1 -p "$port" >/dev/null 2>&1 &
+  _bms_lo_iperf_server_ready || { echo "bms_lo_verify_throughput: iperf3 server not ready on port $port (reverse) after 5 s" >&2; return 5; }
+  local json_rev kbit_rev
+  json_rev=$(ip netns exec "$BMS_LO_NS" iperf3 -c 127.0.0.1 -p "$port" -t 10 -O 2 -J -R) || { echo "bms_lo_verify_throughput: reverse iperf3 client failed" >&2; return 5; }
+  kbit_rev=$(_bms_lo_read_sum_sent_kbit "$json_rev" sum_sent)
+  _bms_lo_check_window reverse "$kbit_rev" || return 5
+
+  # simultaneous (I1's actual full-duplex property): --bidir runs a SINGLE
+  # real duplex TCP connection with both directions transferring at once,
+  # every packet still classified purely by port (dport==$port forward leg,
+  # sport==$port reverse leg) -- a stronger simultaneity guarantee than two
+  # separately-launched client processes racing to start together.
+  ip netns exec "$BMS_LO_NS" iperf3 -s -1 -p "$port" >/dev/null 2>&1 &
+  _bms_lo_iperf_server_ready || { echo "bms_lo_verify_throughput: iperf3 server not ready on port $port (simultaneous) after 5 s" >&2; return 5; }
+  local json_bidir kbit_bidir_fwd kbit_bidir_rev
+  json_bidir=$(ip netns exec "$BMS_LO_NS" iperf3 -c 127.0.0.1 -p "$port" -t 10 -O 2 -J --bidir) || { echo "bms_lo_verify_throughput: simultaneous (--bidir) iperf3 client failed" >&2; return 5; }
+  kbit_bidir_fwd=$(_bms_lo_read_sum_sent_kbit "$json_bidir" sum_sent)
+  kbit_bidir_rev=$(_bms_lo_read_sum_sent_kbit "$json_bidir" sum_sent_bidir_reverse)
+  _bms_lo_check_window "simultaneous-forward" "$kbit_bidir_fwd" || return 5
+  _bms_lo_check_window "simultaneous-reverse" "$kbit_bidir_rev" || return 5
+
+  echo "bms_lo_verify_throughput OK: profile $profile forward=$kbit_fwd reverse=$kbit_rev simultaneous(fwd=$kbit_bidir_fwd,rev=$kbit_bidir_rev) kbit, window ${win_lo}..${win_hi}" >&2
 }
 
 cfg_get() { python3 "$JSONL_CHECK" config --file "$1" --get "$2"; }
@@ -297,15 +451,23 @@ action_run() {
   # carries a belt-and-suspenders `docker rm -f` of these exact names too).
   trap bms_lo_teardown EXIT
   bms_lo_up "$image" "$mem" || exit $?
-  bms_lo_apply_netem "$network" || exit $?
+  bms_lo_apply_netem "$network" "$port" || exit $?
+  # Task 3 (C1/I1, gate fix round 1): REAL measured throughput on the actual
+  # `lo` path, both directions and simultaneously, before either party
+  # launches -- the structural read-back inside bms_lo_apply_netem cannot
+  # detect a present-but-wrong-shape construction (that is exactly how the
+  # pre-fix combined netem+rate passed its own structural check and still
+  # shipped a mislabeled AWS timing row). ~35 s cost, accepted (task brief).
+  bms_lo_verify_throughput "$network" "$port" || exit $?
 
   phase total_workload_begin
   phase_zero setup_once
   phase_zero preprocessing
 
   # Combined byte accounting (A10 clause 2/3): measured from the ONE shared
-  # `lo`'s tx delta, taken AFTER bms_lo_up/bms_lo_apply_netem's OWN calibration
-  # pings (which must not be counted) and around the real protocol traffic.
+  # `lo`'s tx delta, taken AFTER bms_lo_up/bms_lo_apply_netem/
+  # bms_lo_verify_throughput's OWN calibration and iperf3 traffic (which must
+  # not be counted) and around the real protocol traffic.
   local lo_tx_before
   lo_tx_before=$(tx_bytes "$BMS_LO_NS" lo)
 
@@ -366,18 +528,35 @@ action_run() {
   combined_total=$(( lo_tx_after - lo_tx_before ))
 
   # Party 0 (r) prints "[PartyZero] CA/SUM = <int>" (deletion) or
-  # "[PartyZero] CARDINALITY = <int>" (addition), plus (deletion only)
-  # "Total Comm Sent(B):\t<int>".
-  local result=na internal_b=""
+  # "[PartyZero] CARDINALITY = <int>" (addition).
+  #
+  # I2 (gate fix round 1, Task 5): the internal comm-byte counter is parsed
+  # from BOTH parties' stdout, not only party_r, and tagged by MEASURED scope
+  # (see bench/jsonl_check.py build_record for the comparison rule):
+  #   - add-only: party 1 (s) prints "Total Comm (B):\t<int>" -- measured
+  #     against combined_total_b in the same colima smoke run: 2,681,284 B
+  #     vs 2,689,437 B (ratio 0.997), i.e. it is ALREADY the combined total,
+  #     not a directional half -- emitted as internal_comm_b.
+  #   - add-del: party 0 (r) prints "Total Comm Sent(B):\t<int>" -- the label
+  #     says "Sent", i.e. that party's own outgoing bytes only (directional);
+  #     party 1 never prints an equivalent line, so this can only ever be a
+  #     lone directional half -- emitted as internal_b_r (never compared
+  #     alone; build_record marks it unavailable(scope-mismatch)).
+  local result=na internal_b_r="" internal_comm_b=""
   if [ -f "$RUN_WORKDIR/party_r.stdout" ]; then
     local m
     m=$(sed -nE 's/^\[PartyZero\] (CA\/SUM|CARDINALITY) = ([0-9]+)$/\2/p' "$RUN_WORKDIR/party_r.stdout" | tail -1)
     [ -n "$m" ] && result=$m
-    internal_b=$(sed -nE 's/^Total Comm Sent\(B\):[[:space:]]*([0-9]+)$/\1/p' "$RUN_WORKDIR/party_r.stdout" | tail -1)
+    internal_b_r=$(sed -nE 's/^Total Comm Sent\(B\):[[:space:]]*([0-9]+)$/\1/p' "$RUN_WORKDIR/party_r.stdout" | tail -1)
+  fi
+  if [ -f "$RUN_WORKDIR/party_s.stdout" ]; then
+    internal_comm_b=$(sed -nE 's/^\[PartyOne\] Total Comm \(B\):[[:space:]]*([0-9]+)$/\1/p' "$RUN_WORKDIR/party_s.stdout" | tail -1)
   fi
 
-  local tokens=("result=$result" "bytes=combined-loopback" "combined_total_b=$combined_total")
-  [ -n "$internal_b" ] && tokens+=("internal_sent_b_r=$internal_b")
+  local tokens=("result=$result" "bytes=combined-loopback" "combined_total_b=$combined_total"
+                "lo_mtu=1500" "shaping=lo-per-direction(netem-tbf)")
+  [ -n "$internal_b_r" ] && tokens+=("internal_b_r=$internal_b_r")
+  [ -n "$internal_comm_b" ] && tokens+=("internal_comm_b=$internal_comm_b")
   [ -n "$delete_mode" ] && tokens+=("delete_mode=$delete_mode")
 
   write_partial "$out" "$rc_r" "$rc_s" "${tokens[@]}"
@@ -432,4 +611,11 @@ main() {
   esac
 }
 
-main "$@"
+# Sourceable (gate fix round 1, Task 4): bench/aws/run_calib.sh's --wrong-combined-netem
+# expected-negative sources this file to reach bms_lo_apply_netem/bms_lo_verify_throughput
+# directly (a lightweight netns, no docker pair, is enough to exercise the shaping/verify
+# path) without invoking main(). Same convention as bench/netem.sh's own guard --
+# BASH_SOURCE[0] equals $0 only when the file is executed directly.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

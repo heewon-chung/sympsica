@@ -30,6 +30,11 @@ GOOD_CONFIG = {"scenario": "selftest", "protocol": "selftest", "variant": "harne
 # A VALID docker-mode config (validate_config passes on it as-is); C12 mutates ONLY its image.
 GOOD_CONFIG_DOCKER = dict(GOOD_CONFIG, exec_mode="docker",
                           image="ghcr.io/example/image@sha256:0000000000000000000000000000000000000000000000000000000000000000")
+# protocol=bms24 variant of GOOD_CONFIG for build_record's combined-loopback
+# rows (B3-B6): I3 (Task 6) scopes the combined-loopback regime to bms24 at
+# the schema level, so exercising it through build_record needs a bms24
+# config, not GOOD_CONFIG's protocol="selftest".
+GOOD_CONFIG_BMS24 = dict(GOOD_CONFIG, protocol="bms24", variant="add-only")
 
 
 def must(cond, msg):
@@ -102,6 +107,27 @@ ROWS = [
     ("B7",  "must be present together (A10)",                lambda: j.validate_record(setk(CB(), ["notes"], CB()["notes"].replace(";combined_total_b=45700000", "")))),
     ("B8",  "must be present together (A10)",                lambda: j.validate_record(setk(R(), ["notes"], R()["notes"] + ";combined_total_b=999"))),
     ("B9",  "must equal bytes.total 45700000 (A10)",         lambda: j.validate_record(setk(CB(), ["notes"], CB()["notes"].replace("combined_total_b=45700000", "combined_total_b=1")))),
+    # ---- validate_record / check_regime_consistency: I3 protocol scoping (gate fix round 1, Task 6) ----
+    ("B10", "combined-loopback regime is granted to bms24 only (A10); protocol=fastupsi",
+            lambda: j.validate_record(setk(CB(), ["config", "protocol"], "fastupsi"))),
+    ("B11", "mixed byte regimes for protocol bms24 in one file",
+            lambda: j.check_regime_consistency([CB(), setk(R(), ["config", "protocol"], "bms24")])),
+    ("B12", "bms24-combined + fastupsi-two-sided in one file must be ACCEPTED: the inverse claim fails",
+            lambda: must(no_raise(lambda: j.check_regime_consistency([CB(), setk(R(), ["config", "protocol"], "fastupsi")])) is False,
+                         "bms24-combined + fastupsi-two-sided in one file must be ACCEPTED: the inverse claim fails")),
+    # ---- build_record: I2 combined-loopback byte-divergence (gate fix round 1, Task 5) ----
+    ("B13", "combined-scope 6% must flag bytes-divergence: the inverse claim fails",
+            lambda: must("bytes-divergence" not in j.build_record(dict(GOOD_CONFIG_BMS24), "AWS", "ok", dict(SEG), 0, 0, {"r": OBS_OK, "s": OBS_OK}, ["bytes=combined-loopback", "combined_total_b=100", "internal_comm_b=106"], 0)["notes"],
+                         "combined-scope 6% must flag bytes-divergence: the inverse claim fails")),
+    ("B14", "combined-scope exactly 5% must NOT flag bytes-divergence: the inverse claim fails",
+            lambda: must("bytes-divergence" in j.build_record(dict(GOOD_CONFIG_BMS24), "AWS", "ok", dict(SEG), 0, 0, {"r": OBS_OK, "s": OBS_OK}, ["bytes=combined-loopback", "combined_total_b=100", "internal_comm_b=105"], 0)["notes"],
+                         "combined-scope exactly 5% must NOT flag bytes-divergence: the inverse claim fails")),
+    ("B15", "directional both-present summed 6% must flag bytes-divergence: the inverse claim fails",
+            lambda: must("bytes-divergence" not in j.build_record(dict(GOOD_CONFIG_BMS24), "AWS", "ok", dict(SEG), 0, 0, {"r": OBS_OK, "s": OBS_OK}, ["bytes=combined-loopback", "combined_total_b=100", "internal_b_r=53", "internal_b_s=53"], 0)["notes"],
+                         "directional both-present summed 6% must flag bytes-divergence: the inverse claim fails")),
+    ("B16", "directional only-one-present must be unavailable(scope-mismatch), not compared: the inverse claim fails",
+            lambda: must("internal-comparison=unavailable(scope-mismatch)" not in j.build_record(dict(GOOD_CONFIG_BMS24), "AWS", "ok", dict(SEG), 0, 0, {"r": OBS_OK, "s": OBS_OK}, ["bytes=combined-loopback", "combined_total_b=100", "internal_b_r=53"], 0)["notes"],
+                         "directional only-one-present must be unavailable(scope-mismatch), not compared: the inverse claim fails")),
     # ---- check_counts (HSTx3) ----
     ("K1",  "duplicate record for",                        lambda: j.check_counts([R(), R()], [GOOD_KEY], 1)),
     ("K2",  "has trials [0], wanted 0..1",                 lambda: j.check_counts([R()], [GOOD_KEY], 2)),
@@ -133,17 +159,17 @@ ROWS = [
     ("T11", "Threads line regex must not match a malformed line", lambda: must(j.THREADS_RE.match("Threads: nine") is not None, "Threads line regex must not match a malformed line: the inverse claim fails")),
     ("T12", "VmHWM line regex must not match a malformed line",   lambda: must(j.VMHWM_RE.match("VmHWM:  123 MB") is not None, "VmHWM line regex must not match a malformed line: the inverse claim fails")),
     # ---- build_record: combined-loopback byte regime (A10, Task 34) ----
-    ("B3",  "must be present together (A10)",                 lambda: j.build_record(C(), "LOCAL", "ok", SEG, 0, 0, {"r": OBS_OK, "s": OBS_OK}, ["bytes=combined-loopback"], 0)),
-    ("B4",  "must be present together (A10)",                 lambda: j.build_record(C(), "LOCAL", "ok", SEG, 0, 0, {"r": OBS_OK, "s": OBS_OK}, ["combined_total_b=100"], 0)),
+    ("B3",  "must be present together (A10)",                 lambda: j.build_record(dict(GOOD_CONFIG_BMS24), "LOCAL", "ok", SEG, 0, 0, {"r": OBS_OK, "s": OBS_OK}, ["bytes=combined-loopback"], 0)),
+    ("B4",  "must be present together (A10)",                 lambda: j.build_record(dict(GOOD_CONFIG_BMS24), "LOCAL", "ok", SEG, 0, 0, {"r": OBS_OK, "s": OBS_OK}, ["combined_total_b=100"], 0)),
     # B5/B5b: the calibration-noise ceiling (VETH_CALIBRATION_NOISE_MAX_B=8192) is a
     # BOUNDARY, demonstrated on both sides -- one value just above it (must fail) and
     # one value AT it (must NOT fail); a one-sided negative would not show the
     # boundary is where the assertion message says it is.
-    ("B5",  "r_out+s_out <= 8192 B",                          lambda: j.build_record(C(), "LOCAL", "ok", SEG, 8193, 0, {"r": OBS_OK, "s": OBS_OK}, ["bytes=combined-loopback", "combined_total_b=100"], 0)),
+    ("B5",  "r_out+s_out <= 8192 B",                          lambda: j.build_record(dict(GOOD_CONFIG_BMS24), "LOCAL", "ok", SEG, 8193, 0, {"r": OBS_OK, "s": OBS_OK}, ["bytes=combined-loopback", "combined_total_b=100"], 0)),
     ("B5b", "8192 B (the ceiling) must NOT raise: the inverse claim fails",
-            lambda: must(no_raise(lambda: j.build_record(C(), "LOCAL", "ok", SEG, 8192, 0, {"r": OBS_OK, "s": OBS_OK}, ["bytes=combined-loopback", "combined_total_b=100"], 0)) is False,
+            lambda: must(no_raise(lambda: j.build_record(dict(GOOD_CONFIG_BMS24), "LOCAL", "ok", SEG, 8192, 0, {"r": OBS_OK, "s": OBS_OK}, ["bytes=combined-loopback", "combined_total_b=100"], 0)) is False,
                          "8192 B (the ceiling) must NOT raise: the inverse claim fails")),
-    ("B6",  "bytes.total > 0 (A10)",                          lambda: j.build_record(C(), "LOCAL", "ok", SEG, 0, 0, {"r": OBS_OK, "s": OBS_OK}, ["bytes=combined-loopback", "combined_total_b=0"], 0)),
+    ("B6",  "bytes.total > 0 (A10)",                          lambda: j.build_record(dict(GOOD_CONFIG_BMS24), "LOCAL", "ok", SEG, 0, 0, {"r": OBS_OK, "s": OBS_OK}, ["bytes=combined-loopback", "combined_total_b=0"], 0)),
     # ---- accept_record (executable smoke/calibration gates) ----
     ("A1",  "status 'timeout' != required 'ok'",            lambda: j.accept_record(setk(R(), ["status"], "timeout"))),
     ("A2",  "required notes token 'result=65504' absent",   lambda: j.accept_record(R(), expect=["result=65504"])),

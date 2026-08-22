@@ -24,3 +24,31 @@ tx_bytes() { ip netns exec "$1" ip -s -j link show dev "$2" \
              | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["stats64"]["tx"]["bytes"])'; }
 rx_bytes() { ip netns exec "$1" ip -s -j link show dev "$2" \
              | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["stats64"]["rx"]["bytes"])'; }
+
+# apply_split_shaper -- Phase-8 gate fix round 1 (Task 1, C1): the ONE proven
+# netem-root + tbf-child construction (bench/netem.sh's step 4 comment has the
+# full measurement: a single netem carrying both `delay` and `rate` dequeues
+# ~one packet per DELAY interval on the AWS kernel, capping 1 Gbit at 142.7
+# Mbit; delay and tbf-rate as separate qdiscs fixes it, 952.6 Mbit). Factored
+# out so bench/netem.sh (the veth pair) and any caller needing the identical
+# single-interface construction share ONE definition instead of two copies
+# that can silently diverge (exactly what happened to the pre-fix bms24 `lo`
+# path). `$LIMIT` (netem queue depth, packets) follows the caller's own global
+# if set -- both bench/netem.sh and baselines/bms24/run.sh (via `source
+# bench/netem.sh`) already define LIMIT=10000 before any shaping call.
+#   apply_split_shaper <netns> <dev> <delay_us> <rate_kbit>
+# returns nonzero on any tc failure.
+apply_split_shaper() {
+  local ns=$1 dev=$2 delay_us=$3 rate_kbit=$4
+  local limit=${LIMIT:-10000}
+  # tbf burst: a token bucket that cannot hold one timer tick's worth of
+  # tokens under-delivers, so burst >= rate/HZ; sized at rate/250 (HZ=250)
+  # with a 3000 B floor to keep the low-rate profiles' buckets sane -- the
+  # exact formula bench/netem.sh step 4 used inline (pinned by AWS
+  # measurement; unchanged here).
+  local burst_bytes=$(( rate_kbit * 1000 / 8 / 250 ))
+  [ "$burst_bytes" -lt 3000 ] && burst_bytes=3000
+  ip netns exec "$ns" tc qdisc replace dev "$dev" root handle 1: netem delay ${delay_us}us limit "$limit" || return 1
+  ip netns exec "$ns" tc qdisc replace dev "$dev" parent 1: handle 10: tbf \
+    rate ${rate_kbit}kbit burst ${burst_bytes} latency 50ms || return 1
+}

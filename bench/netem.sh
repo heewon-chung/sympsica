@@ -54,6 +54,19 @@ cmd_netns_up() {
   ip netns add sympsica_r && ip netns add sympsica_s
   ip link add veth_r type veth peer name veth_s
   ip link set veth_r netns sympsica_r && ip link set veth_s netns sympsica_s
+  # M1 (gate fix round 1, Task 7): disable IPv6 BEFORE bringing the link up.
+  # This traffic was misattributed in a prior comment to netem.sh's own
+  # calibration pings; that is impossible (measure.sh snapshots veth byte
+  # counters AFTER apply/verify complete, i.e. after the pings already
+  # finished). tcpdump on veth_r identified the real source: IPv6 router
+  # solicitation / neighbor solicitation / multicast-listener-report traffic
+  # the kernel generates when the interface transitions up. Measured
+  # (colima, 3 trials each, 30 s idle window): 140/252/210 B WITHOUT this
+  # sysctl; 0/0/42 B WITH it applied here (the residual is the unavoidable
+  # link-exists-but-sysctl-not-yet-applied race, not a leftover of this
+  # mechanism failing).
+  ip netns exec sympsica_r sysctl -q net.ipv6.conf.veth_r.disable_ipv6=1
+  ip netns exec sympsica_s sysctl -q net.ipv6.conf.veth_s.disable_ipv6=1
   ip netns exec sympsica_r ip addr add 10.99.0.1/24 dev veth_r
   ip netns exec sympsica_s ip addr add 10.99.0.2/24 dev veth_s
   ip netns exec sympsica_r ip link set lo up; ip netns exec sympsica_r ip link set veth_r up
@@ -139,18 +152,23 @@ cmd_apply() {
   # Each element is correct alone; only their combination in one netem is broken.
   # (Not reproducible under colima/6.8.0-117-generic, where the combined form is
   # accurate -- so this is host-dependent and the split is the portable form.)
-  apply_shaping() {  # $1 ns  $2 dev
-    ip netns exec "$1" tc qdisc replace dev "$2" root handle 1: netem delay ${delay_us}us limit "$LIMIT"
-    ip netns exec "$1" tc qdisc replace dev "$2" parent 1: handle 10: tbf \
-      rate ${rate_kbit}kbit burst ${burst_bytes} latency 50ms
+  # apply_split_shaper (bench/lib.sh, Task 1 of the Phase-8 gate fix round) is
+  # the SAME function baselines/bms24/run.sh uses for its own `lo` path, so
+  # this construction can never again drift between the two paths the way it
+  # did before (C1).
+  apply_split_shaper sympsica_r veth_r "$delay_us" "$rate_kbit" || {
+    echo "netem apply: tc qdisc replace failed on veth_r" >&2
+    exit 2
   }
-  apply_shaping sympsica_r veth_r
   local one_sided=false
   if [ "$wrong_one_sided" = 1 ]; then
     one_sided=true
     echo "WRONG-CONSTRUCTION: one-sided delay applied (TEST-ONLY)" >&2
   else
-    apply_shaping sympsica_s veth_s
+    apply_split_shaper sympsica_s veth_s "$delay_us" "$rate_kbit" || {
+      echo "netem apply: tc qdisc replace failed on veth_s" >&2
+      exit 2
+    }
   fi
 
   # step 5: applied-state JSON

@@ -333,6 +333,14 @@ LOGGED "$RESULTS/calib-WAN200-restore.log" -- sudo bash bench/netem.sh calibrate
 RN 2 "one-sided shaping halves it" -- "LOGGED $RESULTS/neg-one-sided.log -- bash -c 'sudo bash bench/netem.sh apply --profile WAN200 --wrong-one-sided && sudo bash bench/netem.sh verify --profile WAN200 --rtt-only'"
 RN 2 "sent+received double-counts" -- "LOGGED $RESULTS/neg-sum-both.log -- sudo bash bench/measure.sh selftest-bytes --wrong-sum-both"
 
+# Task 4 (gate fix round 1, C1, R6-NOTAUTO): the pre-fix combined netem
+# delay+rate construction on bms24's `lo` path, exercised through the ACTUAL
+# throughput gate (bms_lo_verify_throughput) rather than just the structural
+# read-back that let it ship unnoticed the first time. A throwaway netns
+# (sympsica_lo_negtest) is enough -- no docker pair needed, since the
+# TEST-ONLY flag never launches a party.
+RN 5 "forward throughput" -- "LOGGED $RESULTS/neg-wrong-combined-netem.log -- sudo bash -c 'source bench/lib.sh; source baselines/bms24/run.sh; BMS_LO_NS=sympsica_lo_negtest; ip netns del \$BMS_LO_NS 2>/dev/null; ip netns add \$BMS_LO_NS; ip netns exec \$BMS_LO_NS ip link set lo up; ip netns exec \$BMS_LO_NS ip link set lo mtu 1500; bms_lo_apply_netem WAN200 10501 --wrong-combined-netem; bms_lo_verify_throughput WAN200 10501; rc=\$?; ip netns del \$BMS_LO_NS 2>/dev/null; exit \$rc'"
+
 # I1 (Codex review, Task 34 fix round): `set +e` does NOT suppress an ERR trap (errtrace/-E
 # keeps it live regardless of errexit), so the old `set +e; cmd; RC=$?; set -e` form let the
 # generic on_err fire on ANY prepare failure before this 124 branch could ever run. Being on

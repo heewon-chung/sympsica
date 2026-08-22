@@ -95,6 +95,66 @@ class TestSchema(unittest.TestCase):
         c = CB(); c["notes"] = c["notes"].replace(";combined_total_b=45700000", ""); self.assertFails(c, "must be present together (A10)")
         r = R(); r["notes"] = r["notes"] + ";combined_total_b=999"; self.assertFails(r, "must be present together (A10)")
         c = CB(); c["notes"] = c["notes"].replace("combined_total_b=45700000", "combined_total_b=1"); self.assertFails(c, "must equal bytes.total 45700000 (A10)")
+        # I3 (gate fix round 1, Task 6): the combined-loopback regime is
+        # granted to bms24 only (A10) -- any other protocol carrying the
+        # tokens is rejected at the schema level, not just by convention.
+        c = CB(); c["config"]["protocol"] = "fastupsi"; self.assertFails(c, "combined-loopback regime is granted to bms24 only (A10); protocol=fastupsi")
+
+    # I3 (gate fix round 1, Task 6): file-level mixed-regime refusal
+    # (check_regime_consistency). Folded into TestSchema, not a separate
+    # unittest.TestCase, so ctest's bench.Schema (CMakeLists.txt runs exactly
+    # `test_jsonl_check.py TestSchema`) actually exercises it -- a standalone
+    # class here would be invisible to T1 without a CMakeLists.txt change,
+    # which is outside this fix round's authorized file list.
+    def test_bms24_mixed_regime_rejected(self):
+        combined = CB()
+        two_sided = R(); two_sided["config"]["protocol"] = "bms24"
+        with self.assertRaises(AssertionError) as cm:
+            j.check_regime_consistency([combined, two_sided])
+        self.assertIn("mixed byte regimes for protocol bms24 in one file", str(cm.exception))
+
+    def test_bms24_combined_plus_fastupsi_twosided_accepted(self):
+        combined = CB()
+        fastupsi_two_sided = R(); fastupsi_two_sided["config"]["protocol"] = "fastupsi"
+        j.check_regime_consistency([combined, fastupsi_two_sided])   # must NOT raise
+
+    def test_same_regime_repeated_accepted(self):
+        a, b = CB(), CB()
+        j.check_regime_consistency([a, b])   # must NOT raise
+
+    # I2 (gate fix round 1, Task 5): build_record's combined-loopback
+    # internal-vs-external divergence check, scoped by which internal-counter
+    # token is present (see build_record's own comment for the measured
+    # evidence backing the combined/directional split). Same ctest-visibility
+    # reason as above for folding these into TestSchema.
+    def _build_bms24(self, tokens):
+        cfg = {"scenario": "calib", "protocol": "bms24", "variant": "add-only", "n": 1, "u": 0,
+               "network": "LAN", "seed": 0, "thread_regime": "runtime-helpers"}
+        obs_ok = {"state": "observed", "threads_max": 1, "rss_kb": 1000}
+        seg = {"total": 1.0, "online": 0.5, "preprocessing": 0.0, "setup_once": 0.0}
+        return j.build_record(cfg, "AWS", "ok", seg, 0, 0, {"r": obs_ok, "s": obs_ok}, tokens, 0)
+
+    def test_combined_scope_6pct_flags(self):
+        rec = self._build_bms24(["bytes=combined-loopback", "combined_total_b=100", "internal_comm_b=106"])
+        self.assertIn("bytes-divergence", rec["notes"])
+
+    def test_combined_scope_exactly_5pct_does_not_flag(self):
+        rec = self._build_bms24(["bytes=combined-loopback", "combined_total_b=100", "internal_comm_b=105"])
+        self.assertNotIn("bytes-divergence", rec["notes"])
+
+    def test_directional_both_present_summed_6pct_flags(self):
+        rec = self._build_bms24(["bytes=combined-loopback", "combined_total_b=100", "internal_b_r=53", "internal_b_s=53"])
+        self.assertIn("bytes-divergence", rec["notes"])
+
+    def test_directional_only_one_present_is_unavailable(self):
+        rec = self._build_bms24(["bytes=combined-loopback", "combined_total_b=100", "internal_b_r=53"])
+        self.assertIn("internal-comparison=unavailable(scope-mismatch)", rec["notes"])
+        self.assertNotIn("bytes-divergence", rec["notes"])
+
+    def test_no_internal_counter_no_comparison(self):
+        rec = self._build_bms24(["bytes=combined-loopback", "combined_total_b=100"])
+        self.assertNotIn("bytes-divergence", rec["notes"])
+        self.assertNotIn("unavailable(scope-mismatch)", rec["notes"])
 
 
 class TestCounts(unittest.TestCase):
@@ -142,7 +202,11 @@ class TestSegments(unittest.TestCase):
     def test_divergence_strict_5pct(self):
         self.assertFalse(j.divergence_flag(105, 100))
         self.assertTrue(j.divergence_flag(106, 100))
-        self.assertFalse(j.divergence_flag(5, 0))
+        self.assertFalse(j.divergence_flag(0, 0))
+        # I2 (gate fix round 1, Task 5): a zero external denominator with a
+        # real internal counter must no longer silently return False.
+        with self.assertRaises(ValueError):
+            j.divergence_flag(5, 0)
 
 
 if __name__ == "__main__":

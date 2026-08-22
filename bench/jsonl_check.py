@@ -42,16 +42,32 @@ COMBINED_LOOPBACK_TOKEN = "bytes=combined-loopback"
 COMBINED_TOTAL_RE = re.compile(r"^combined_total_b=([0-9]+)$")
 # The veth-pair deltas measure.sh computes generically for EVERY docker-mode
 # trial (r_out/s_out passed into build_record) are not exactly zero for
-# combined-loopback rows: measure.sh step 8 unconditionally calls
-# `bench/netem.sh apply`, whose `cmd_apply` sends 20 real ICMP pings on the
-# standard veth pair to measure base RTT before any qdisc is applied -- this
-# happens for bms24 too even though its traffic never touches that pair.
-# Measured (task-34-report.md): r_out=462, s_out=420 (882 B total) from that
-# calibration burst on one real run. 8192 B is ~9x that observed noise and
-# ~3000x below real bms24 traffic (2.68 MB in the same run), so a genuine
-# leak of bms24 traffic onto the veth pair -- which would be MB-scale by
-# construction -- still trips this check; only the harness's own calibration
-# noise is tolerated.
+# combined-loopback rows, even though bms24's traffic never touches that pair.
+#
+# M1 (gate fix round 1, Task 7): a prior comment here attributed this to
+# `bench/netem.sh apply`'s 20 calibration pings. That is impossible --
+# measure.sh takes the "before" byte snapshot AFTER apply/verify complete
+# (step 8 finishes, then step 10 snapshots), so pings that already finished
+# cannot appear in a delta measured starting after them. tcpdump on veth_r
+# during the actual bracketed window identified the real source: IPv6 router
+# solicitation / neighbor solicitation / multicast-listener-report traffic
+# the kernel sends when the veth interface transitions up. Measured (colima,
+# 3x30s trials): 140/252/210 B without mitigation.
+#
+# `bench/netem.sh cmd_netns_up` now disables IPv6 on both veth ends before
+# bringing them up (0/0/42 B across 3 trials WITH that fix) -- the traffic IS
+# avoidable in principle. That fix, however, reaches only the native-exec_mode
+# path; `bench/measure.sh`'s own separate docker-mode veth setup (its step 8,
+# ~line 342) creates an unshaped duplicate of the same veth pair and is
+# OUTSIDE this fix round's authorized file list, so it does not yet carry the
+# same sysctl -- and bms24 (the only combined-loopback protocol) always runs
+# exec_mode=docker. The ceiling below therefore still has to bound the
+# UNMITIGATED docker-mode noise (same 140-252 B range measured above), so it
+# is kept at 8192 B rather than lowered, until bench/measure.sh's duplicate
+# setup gets the same fix in a future round. 8192 B is ~9x the observed
+# unmitigated noise and ~3000x below real bms24 traffic (2.68 MB in a real
+# colima smoke run), so a genuine leak of bms24 traffic onto the veth pair --
+# which would be MB-scale by construction -- still trips this check.
 VETH_CALIBRATION_NOISE_MAX_B = 8192
 SCENARIOS = {"S1", "S2", "S3", "U", "M0", "smoke",               # master plan line 30
              "selftest", "calib", "derived"}                      # controller amendment A3 -- exactly these three additions
@@ -115,6 +131,16 @@ def validate_record(rec):
     notes_list = rec["notes"].split(";") if isinstance(rec.get("notes"), str) else []
     combined_flag = COMBINED_LOOPBACK_TOKEN in notes_list
     combined_vals = [m.group(1) for tok in notes_list for m in (COMBINED_TOTAL_RE.match(tok),) if m]
+    # I3 (gate fix round 1, Task 6): the combined-loopback regime was granted
+    # to bms24 alone (A10 -- BMS+24's gRPC "local credentials" force both
+    # parties into one shared netns, which no other wrapper does). Scope the
+    # tokens to that protocol at the schema level so a row from any other
+    # protocol carrying them (accidentally or otherwise) can never be pooled
+    # with bms24's combined totals by a Phase-9 consumer that only checks the
+    # notes tokens.
+    if (combined_flag or combined_vals) and env != "DERIVED":
+        assert cfg["protocol"] == "bms24", \
+            "HST: combined-loopback regime is granted to bms24 only (A10); protocol=%s" % cfg["protocol"]
     if env == "DERIVED":
         assert b["r_out"] == 0 and b["s_out"] == 0, \
             "HST: DERIVED rows have no directional split: r_out and s_out must be 0 (A1)"
@@ -155,6 +181,27 @@ def validate_record(rec):
 def record_key(rec):
     c = rec["config"]
     return (rec["scenario"], c["protocol"], c["variant"], c["n"], c["u"], c["network"])
+
+
+def check_regime_consistency(records):
+    """I3 (gate fix round 1, Task 6): within ONE file, a single protocol may
+    not mix combined-loopback rows with ordinary two-sided rows -- that would
+    let a table builder pool bytes.total across two different byte-accounting
+    semantics for what looks like one protocol column. Different protocols
+    coexisting (each internally consistent) is fine -- that is the normal
+    Phase-9 multi-protocol table. DERIVED rows are a third, unrelated regime
+    and are excluded from this bridge entirely."""
+    seen = {}
+    for rec in records:
+        if rec.get("env") == "DERIVED":
+            continue
+        cfg = rec.get("config", {})
+        proto = cfg.get("protocol")
+        notes_list = rec["notes"].split(";") if isinstance(rec.get("notes"), str) else []
+        combined = COMBINED_LOOPBACK_TOKEN in notes_list or any(COMBINED_TOTAL_RE.match(t) for t in notes_list)
+        seen.setdefault(proto, set()).add("combined" if combined else "two-sided")
+    for proto, regimes in seen.items():
+        assert len(regimes) <= 1, "HST: mixed byte regimes for protocol %s in one file" % proto
 
 
 def check_counts(records, expected_keys, trials):
@@ -208,8 +255,16 @@ def parse_segments(stderr_text, allow_incomplete=False):
 
 
 def divergence_flag(internal_b, external_b):
-    """FC: internal-vs-external divergence strictly greater than 5% flags the record."""
+    """FC: internal-vs-external divergence strictly greater than 5% flags the record.
+    I2 (gate fix round 1, Task 5): a zero external denominator with a real
+    (nonzero) internal counter is NOT "no divergence" -- that silent False was
+    exactly the combined-loopback bypass the review found (A10 sets r_out=0,
+    so the old zero-denominator branch discarded any BMS internal/external
+    discrepancy of any size). Only a genuinely empty pair (both zero) is
+    still uninformative and returns False."""
     if external_b <= 0:
+        if internal_b > 0:
+            raise ValueError("divergence: external denominator is zero while an internal counter is present")
         return False
     return abs(internal_b - external_b) / float(external_b) > 0.05
 
@@ -333,12 +388,6 @@ def build_record(cfg, env, status, segments, r_out, s_out, obs, notes_tokens, tr
     else:
         if any(o["threads_max"] > 1 for o in observed.values()):
             notes.append("threads>1:runtime-helpers")
-    internal = None
-    for tok in notes_tokens:
-        if tok.startswith("internal_sent_b_r="):
-            internal = int(tok.split("=", 1)[1])
-    if internal is not None and divergence_flag(internal, r_out):
-        notes.append("bytes-divergence")
     if segments.get("setup_once") is not None:
         notes.append("setup_once_s=%.6f" % segments["setup_once"])
     if segments.get("_synth"):
@@ -360,6 +409,29 @@ def build_record(cfg, env, status, segments, r_out, s_out, obs, notes_tokens, tr
         assert r_out + s_out <= VETH_CALIBRATION_NOISE_MAX_B, \
             "HST: combined-loopback regime requires r_out+s_out <= %d B (harness calibration-noise ceiling) from the veth pair (observed r_out=%d s_out=%d, sum=%d) (A10)" % (VETH_CALIBRATION_NOISE_MAX_B, r_out, s_out, r_out + s_out)
         combined_total = int(combined_vals[0])
+        # I2 (gate fix round 1, Task 5): compare BMS+24's OWN internal
+        # comm-byte counter against the external combined total, comparing
+        # ONLY like with like. Two counter SCOPES are distinguished by token
+        # name (established by real measurement, task report): add-only's
+        # party 1 prints "Total Comm (B)" -- measured 2,681,284 B against a
+        # same-run combined_total_b of 2,689,437 B (ratio 0.997), i.e. it IS
+        # already the combined total, wired here as `internal_comm_b`.
+        # add-del's party 0 prints "Total Comm Sent(B)" -- the label says
+        # "Sent", i.e. that PARTY's own directional half, not a total; only
+        # one directional half is ever printed (party 1's is not), so it can
+        # never be safely compared alone -- summing two real per-party
+        # halves is required before a like-with-like comparison exists.
+        internal_combined = next((int(t.split("=", 1)[1]) for t in notes_tokens if t.startswith("internal_comm_b=")), None)
+        internal_r = next((int(t.split("=", 1)[1]) for t in notes_tokens if t.startswith("internal_b_r=")), None)
+        internal_s = next((int(t.split("=", 1)[1]) for t in notes_tokens if t.startswith("internal_b_s=")), None)
+        if internal_combined is not None:
+            if divergence_flag(internal_combined, combined_total):
+                notes.append("bytes-divergence")
+        elif internal_r is not None and internal_s is not None:
+            if divergence_flag(internal_r + internal_s, combined_total):
+                notes.append("bytes-divergence")
+        elif internal_r is not None or internal_s is not None:
+            notes.append("internal-comparison=unavailable(scope-mismatch)")
         bytes_obj = {"r_out": 0, "s_out": 0, "total": combined_total, "external_total": combined_total}
     else:
         bytes_obj = {"r_out": r_out, "s_out": s_out, "total": r_out + s_out, "external_total": r_out + s_out}
@@ -456,14 +528,18 @@ def main(argv=None):
     a = ap.parse_args(argv)
     try:
         if a.cmd == "validate":
+            recs = []
             with open(a.file) as f:
                 for i, line in enumerate(f, 1):
                     if not line.strip():
                         continue
+                    rec = json.loads(line)
                     try:
-                        validate_record(json.loads(line))
+                        validate_record(rec)
                     except AssertionError as e:
                         raise AssertionError("%s (line %d)" % (e, i))
+                    recs.append(rec)
+            check_regime_consistency(recs)   # I3 (Task 6): file-level mixed-regime refusal
             print("validate OK: %s" % a.file)
         elif a.cmd == "counts":
             with open(a.file) as f:
@@ -495,6 +571,7 @@ def main(argv=None):
             assert recs, "ACC: no records in %s" % a.file
             if a.count is not None:
                 assert len(recs) == a.count, "ACC: %d records in %s, required exactly %d" % (len(recs), a.file, a.count)
+            check_regime_consistency(recs)   # I3 (Task 6): file-level mixed-regime refusal
             rec = recs[a.line - 1] if a.line > 0 else recs[-1]
             accept_record(rec, a.status, a.expect, a.flag, a.expect_re,
                           _range(a.bytes_within) if a.bytes_within else None,
