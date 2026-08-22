@@ -253,10 +253,42 @@ bms_lo_verify_throughput() {  # $1=profile $2=port -- REAL measured throughput o
     done
     return 1
   }
-  _bms_lo_read_sum_sent_kbit() {  # $1=json $2=key ("sum_sent"|"sum_sent_bidir_reverse")
-    python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(int(round(d["end"][sys.argv[2]]["bits_per_second"]/1000.0)))' "$1" "$2"
+  _bms_lo_read_sum_sent_kbit() {  # $1=json $2=key ("sum_sent") -> kbit, or exit 1 with a message
+    # A missing key MUST be loud: on the first AWS run this function raised KeyError,
+    # printed nothing, and the empty string sailed through the window check below
+    # (`[ "" -lt N ]` is false, so "outside the window" was never true). That was a
+    # silent pass on the simultaneous-reverse leg -- the exact assertion-integrity
+    # class the Phase-8 gate exists to catch.
+    python3 - "$1" "$2" <<'PY' || return 1
+import json, sys
+d = json.loads(sys.argv[1]); k = sys.argv[2]
+try:
+    print(int(round(d["end"][k]["bits_per_second"] / 1000.0)))
+except KeyError:
+    sys.stderr.write("bms_lo_verify_throughput: iperf3 JSON has no end.%s (iperf %s)\n" % (k, d.get("start", {}).get("version", "?")))
+    sys.exit(1)
+PY
   }
-  _bms_lo_check_window() {  # $1=label $2=kbit
+  _bms_lo_read_bidir_leg_kbit() {  # $1=json $2=forward|reverse -> sender-side kbit of that --bidir leg
+    # Version-independent: iperf 3.9 (Ubuntu 22.04) has no end.sum_sent_bidir_reverse
+    # (added in 3.10), but every version lists both legs under end.streams[], the
+    # reverse (server->client) leg being the one whose sender.sender flag is false.
+    python3 - "$1" "$2" <<'PY' || return 1
+import json, sys
+d = json.loads(sys.argv[1]); want = (sys.argv[2] == "forward")
+legs = [s for s in d["end"]["streams"] if bool(s.get("sender", {}).get("sender")) == want]
+if len(legs) != 1:
+    sys.stderr.write("bms_lo_verify_throughput: --bidir JSON has %d %s leg(s) in end.streams, expected 1 (iperf %s)\n"
+                     % (len(legs), sys.argv[2], d.get("start", {}).get("version", "?")))
+    sys.exit(1)
+print(int(round(legs[0]["sender"]["bits_per_second"] / 1000.0)))
+PY
+  }
+  _bms_lo_check_window() {  # $1=label $2=kbit -- a non-integer (e.g. empty) is a FAILURE, never a pass
+    case "$2" in ''|*[!0-9]*)
+      echo "bms_lo_verify_throughput FAILED: profile $profile $1 throughput is not a number ('$2') -- measurement missing" >&2
+      return 1 ;;
+    esac
     if [ "$2" -lt "$win_lo" ] || [ "$2" -gt "$win_hi" ]; then
       echo "bms_lo_verify_throughput FAILED: profile $profile $1 throughput $2 kbit outside ${win_lo}..${win_hi} kbit (profile rate $rate_kbit kbit)" >&2
       return 1
@@ -268,7 +300,7 @@ bms_lo_verify_throughput() {  # $1=profile $2=port -- REAL measured throughput o
   _bms_lo_iperf_server_ready || { echo "bms_lo_verify_throughput: iperf3 server not ready on port $port (forward) after 5 s" >&2; return 5; }
   local json_fwd kbit_fwd
   json_fwd=$(ip netns exec "$BMS_LO_NS" iperf3 -c 127.0.0.1 -p "$port" -t 10 -O 2 -J) || { echo "bms_lo_verify_throughput: forward iperf3 client failed" >&2; return 5; }
-  kbit_fwd=$(_bms_lo_read_sum_sent_kbit "$json_fwd" sum_sent)
+  kbit_fwd=$(_bms_lo_read_sum_sent_kbit "$json_fwd" sum_sent) || return 5
   _bms_lo_check_window forward "$kbit_fwd" || return 5
 
   # reverse: -R -- server sends, client receives; classified sport==$port -> class 1:20
@@ -276,7 +308,7 @@ bms_lo_verify_throughput() {  # $1=profile $2=port -- REAL measured throughput o
   _bms_lo_iperf_server_ready || { echo "bms_lo_verify_throughput: iperf3 server not ready on port $port (reverse) after 5 s" >&2; return 5; }
   local json_rev kbit_rev
   json_rev=$(ip netns exec "$BMS_LO_NS" iperf3 -c 127.0.0.1 -p "$port" -t 10 -O 2 -J -R) || { echo "bms_lo_verify_throughput: reverse iperf3 client failed" >&2; return 5; }
-  kbit_rev=$(_bms_lo_read_sum_sent_kbit "$json_rev" sum_sent)
+  kbit_rev=$(_bms_lo_read_sum_sent_kbit "$json_rev" sum_sent) || return 5
   _bms_lo_check_window reverse "$kbit_rev" || return 5
 
   # simultaneous (I1's actual full-duplex property): --bidir runs a SINGLE
@@ -288,8 +320,8 @@ bms_lo_verify_throughput() {  # $1=profile $2=port -- REAL measured throughput o
   _bms_lo_iperf_server_ready || { echo "bms_lo_verify_throughput: iperf3 server not ready on port $port (simultaneous) after 5 s" >&2; return 5; }
   local json_bidir kbit_bidir_fwd kbit_bidir_rev
   json_bidir=$(ip netns exec "$BMS_LO_NS" iperf3 -c 127.0.0.1 -p "$port" -t 10 -O 2 -J --bidir) || { echo "bms_lo_verify_throughput: simultaneous (--bidir) iperf3 client failed" >&2; return 5; }
-  kbit_bidir_fwd=$(_bms_lo_read_sum_sent_kbit "$json_bidir" sum_sent)
-  kbit_bidir_rev=$(_bms_lo_read_sum_sent_kbit "$json_bidir" sum_sent_bidir_reverse)
+  kbit_bidir_fwd=$(_bms_lo_read_bidir_leg_kbit "$json_bidir" forward) || return 5
+  kbit_bidir_rev=$(_bms_lo_read_bidir_leg_kbit "$json_bidir" reverse) || return 5
   _bms_lo_check_window "simultaneous-forward" "$kbit_bidir_fwd" || return 5
   _bms_lo_check_window "simultaneous-reverse" "$kbit_bidir_rev" || return 5
 
