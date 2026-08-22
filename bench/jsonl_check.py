@@ -29,6 +29,30 @@ COUNTER_KEYS = {"triples", "rounds", "announced"}
 
 NETWORKS = {"LAN", "WAN200", "WAN50", "WAN5"}                 # measured rows
 NETWORKS_DERIVED = {"LAN", "200 Mbps", "50 Mbps", "5 Mbps"}    # DERIVED rows: VERBATIM source column labels (A1)
+
+# A10 (controller amendment, 2026-08-22): BMS+24 runs both parties in ONE
+# shared-loopback netns (gRPC "local credentials" accept only the literal
+# address 127.0.0.1 -- no per-party netns pair can satisfy that on both ends
+# at once). A loopback pair cannot yield per-party OUTGOING counts on
+# separate interfaces, so these rows carry a THIRD byte regime: r_out=s_out=0,
+# total=external_total measured from the shared `lo`'s tx delta. Gated on the
+# mandatory token below so a mislabeled row can never silently pass the
+# strict total==r_out+s_out check meant for real per-party measurements.
+COMBINED_LOOPBACK_TOKEN = "bytes=combined-loopback"
+COMBINED_TOTAL_RE = re.compile(r"^combined_total_b=([0-9]+)$")
+# The veth-pair deltas measure.sh computes generically for EVERY docker-mode
+# trial (r_out/s_out passed into build_record) are not exactly zero for
+# combined-loopback rows: measure.sh step 8 unconditionally calls
+# `bench/netem.sh apply`, whose `cmd_apply` sends 20 real ICMP pings on the
+# standard veth pair to measure base RTT before any qdisc is applied -- this
+# happens for bms24 too even though its traffic never touches that pair.
+# Measured (task-34-report.md): r_out=462, s_out=420 (882 B total) from that
+# calibration burst on one real run. 8192 B is ~9x that observed noise and
+# ~3000x below real bms24 traffic (2.68 MB in the same run), so a genuine
+# leak of bms24 traffic onto the veth pair -- which would be MB-scale by
+# construction -- still trips this check; only the harness's own calibration
+# noise is tolerated.
+VETH_CALIBRATION_NOISE_MAX_B = 8192
 SCENARIOS = {"S1", "S2", "S3", "U", "M0", "smoke",               # master plan line 30
              "selftest", "calib", "derived"}                      # controller amendment A3 -- exactly these three additions
 STATUSES = {"ok", "timeout", "dnf", "error"}
@@ -85,11 +109,21 @@ def validate_record(rec):
     assert isinstance(b, dict) and set(b.keys()) == BYTES_KEYS, "HST: bytes keys must be exactly %s" % sorted(BYTES_KEYS)
     for k in sorted(BYTES_KEYS):
         assert _is_int(b[k]) and b[k] >= 0, "HST: bytes.%s must be a non-negative int" % k
+    # notes' own type is asserted further below (P25); guard here so a
+    # malformed (non-string) notes field still reaches THAT assertion instead
+    # of crashing on .split() first.
+    combined = isinstance(rec.get("notes"), str) and COMBINED_LOOPBACK_TOKEN in rec["notes"].split(";")
     if env == "DERIVED":
         assert b["r_out"] == 0 and b["s_out"] == 0, \
             "HST: DERIVED rows have no directional split: r_out and s_out must be 0 (A1)"
         assert b["total"] == b["external_total"], \
             "HST: DERIVED rows require bytes.total == external_total == published bytes (A1)"
+    elif combined:
+        assert b["r_out"] == 0 and b["s_out"] == 0, \
+            "HST: combined-loopback rows have no directional split: r_out and s_out must be 0 (A10)"
+        assert b["total"] == b["external_total"], \
+            "HST: combined-loopback rows require bytes.total == external_total (A10)"
+        assert b["total"] > 0, "HST: combined-loopback rows require bytes.total > 0 (A10)"
     else:
         assert b["total"] == b["r_out"] + b["s_out"], \
             "HST: bytes.total %d != r_out+s_out %d" % (b["total"], b["r_out"] + b["s_out"])
@@ -297,6 +331,25 @@ def build_record(cfg, env, status, segments, r_out, s_out, obs, notes_tokens, tr
     if segments.get("_synth"):
         notes.append("segments-synthesized=" + ",".join(segments["_synth"]))
         assert status in ("timeout", "error"), "HST: synthesized segments require status timeout|error"
+    # A10: combined-loopback byte regime (BMS+24's single shared-loopback
+    # topology has no per-party split). Both tokens are required TOGETHER --
+    # either one without the other is an assertion failure, never a silent
+    # fallback to r_out+s_out (a regime that can half-apply eventually
+    # mislabels a row). The veth-pair deltas measure.sh computed generically
+    # must genuinely be zero in this regime (no traffic was meant to cross
+    # the veth pair); a non-zero delta is a real bug signal, not something to
+    # silently override.
+    combined_flag = COMBINED_LOOPBACK_TOKEN in notes_tokens
+    combined_vals = [m.group(1) for tok in notes_tokens for m in (COMBINED_TOTAL_RE.match(tok),) if m]
+    assert combined_flag == bool(combined_vals), \
+        "HST: bytes=combined-loopback and combined_total_b=<int> must be present together (A10); got flag=%s combined_total_b=%s" % (combined_flag, combined_vals)
+    if combined_flag:
+        assert r_out + s_out <= VETH_CALIBRATION_NOISE_MAX_B, \
+            "HST: combined-loopback regime requires r_out+s_out <= %d B (harness calibration-noise ceiling) from the veth pair (observed r_out=%d s_out=%d, sum=%d) (A10)" % (VETH_CALIBRATION_NOISE_MAX_B, r_out, s_out, r_out + s_out)
+        combined_total = int(combined_vals[0])
+        bytes_obj = {"r_out": 0, "s_out": 0, "total": combined_total, "external_total": combined_total}
+    else:
+        bytes_obj = {"r_out": r_out, "s_out": s_out, "total": r_out + s_out, "external_total": r_out + s_out}
     rec = {
         "ts": ts, "env": env, "scenario": cfg["scenario"],
         "config": {"n": cfg["n"], "u": cfg["u"], "network": cfg["network"],
@@ -305,7 +358,7 @@ def build_record(cfg, env, status, segments, r_out, s_out, obs, notes_tokens, tr
         "time_s": {"online": float(segments.get("online") or 0.0),
                    "offline": float(segments.get("preprocessing") or 0.0),
                    "total": float(segments.get("total") or 0.0)},
-        "bytes": {"r_out": r_out, "s_out": s_out, "total": r_out + s_out, "external_total": r_out + s_out},
+        "bytes": bytes_obj,
         "counters": {"triples": 0, "rounds": 0, "announced": 0},
         "notes": ";".join(notes),
     }

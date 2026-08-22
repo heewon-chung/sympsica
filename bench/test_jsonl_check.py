@@ -30,6 +30,18 @@ GOOD_DERIVED = {
     "notes": "table=T3;comm_mb_source=1451.6;counters=na;transcribed-not-measured",
     "measured": False, "source": "ACNS26-Tables3-4",
 }
+# A10: BMS+24's single shared-loopback-netns byte regime (bench/jsonl_check.py
+# COMBINED_LOOPBACK_TOKEN) -- no per-party split; total/external_total come
+# from the shared `lo`'s measured tx delta, not r_out+s_out.
+GOOD_COMBINED = {
+    "ts": "2026-08-22T00:00:00+00:00", "env": "AWS", "scenario": "calib",
+    "config": {"n": 1048576, "u": 1024, "network": "LAN", "protocol": "bms24", "variant": "add-only"},
+    "trial": 0, "seed": 0, "status": "ok",
+    "time_s": {"online": 116.0, "offline": 0.0, "total": 120.0},
+    "bytes": {"r_out": 0, "s_out": 0, "total": 45700000, "external_total": 45700000},
+    "counters": {"triples": 0, "rounds": 0, "announced": 0},
+    "notes": "result=18;bytes=combined-loopback;combined_total_b=45700000;counters=na",
+}
 GOOD_KEY = ("smoke", "bms24", "add-only", 65536, 64, "LAN")
 GOOD_MARKERS = "\n".join([
     "PHASE:total_workload_begin:1000", "PHASE:setup_once_begin:1100", "PHASE:setup_once_end:1200",
@@ -45,10 +57,15 @@ def D():
     return copy.deepcopy(GOOD_DERIVED)
 
 
+def CB():
+    return copy.deepcopy(GOOD_COMBINED)
+
+
 class TestSchema(unittest.TestCase):
     def test_good_measured_and_derived_pass(self):
         j.validate_record(R())
         j.validate_record(D())
+        j.validate_record(CB())
 
     def assertFails(self, rec, substr):
         with self.assertRaises(AssertionError) as cm:
@@ -70,6 +87,9 @@ class TestSchema(unittest.TestCase):
         d = D(); d["bytes"]["external_total"] = 1; self.assertFails(d, "total == external_total == published")
         d = D(); d["measured"] = True; self.assertFails(d, "requires 'measured': false")
         d = D(); d["source"] = "x"; self.assertFails(d, "requires source 'ACNS26-Tables3-4'")
+        c = CB(); c["bytes"]["r_out"] = 5; self.assertFails(c, "r_out and s_out must be 0 (A10)")
+        c = CB(); c["bytes"]["external_total"] = 1; self.assertFails(c, "total == external_total (A10)")
+        c = CB(); c["bytes"]["total"] = 0; c["bytes"]["external_total"] = 0; self.assertFails(c, "total > 0 (A10)")
 
 
 class TestCounts(unittest.TestCase):

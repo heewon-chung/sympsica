@@ -463,4 +463,11 @@ main() {
   esac
 }
 
-main "$@"
+# Sourceable (controller amendment, Task 34/A10): bms24/run.sh sources this
+# file to reuse PROFILE_RTT_US/PROFILE_RATE_KBIT/LIMIT (ONE definition, never
+# duplicated) for its own single-netns-loopback netem application. This guard
+# changes nothing about `bash bench/netem.sh ...` CLI behaviour -- BASH_SOURCE[0]
+# equals $0 only when the file is executed directly, never when sourced.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

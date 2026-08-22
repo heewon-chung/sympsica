@@ -1,0 +1,17 @@
+{
+  "ImageId": "AMI-PLACEHOLDER",
+  "InstanceType": "c6i.8xlarge",
+  "MinCount": 1,
+  "MaxCount": 1,
+  "KeyName": "KEYPAIR-PLACEHOLDER",
+  "SecurityGroupIds": ["SG-PLACEHOLDER"],
+  "CpuOptions": {"CoreCount": 16, "ThreadsPerCore": 1},
+  "BlockDeviceMappings": [
+    {"DeviceName": "/dev/sda1",
+     "Ebs": {"VolumeSize": 200, "VolumeType": "gp3", "DeleteOnTermination": true}}
+  ],
+  "MetadataOptions": {"HttpTokens": "required", "HttpEndpoint": "enabled"},
+  "TagSpecifications": [
+    {"ResourceType": "instance", "Tags": [{"Key": "Name", "Value": "sympsica-bench"}]}
+  ]
+}

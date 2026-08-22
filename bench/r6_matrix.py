@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""bench/r6_matrix.py -- Phase 8 R6-NOTAUTO matrix: 79 pure-function/policy
-rows over bench/jsonl_check.py (phase-8-plan.md). One row per function-level
+"""bench/r6_matrix.py -- Phase 8 R6-NOTAUTO matrix: 86 pure-function/policy
+rows over bench/jsonl_check.py (phase-8-plan.md; 79 through Task 33, +7 for
+Task 34/A10's combined-loopback byte regime). One row per function-level
 assertion; each row is a ONE-FIELD mutation of a valid fixture and must raise
 AssertionError whose message contains the pinned substring. The two CLI-level
 assertions (accept's "no records" and "--count") are covered by the LIVE rows
-31-B.6 (l)/(v), not here -- the full evidence is "79 rows plus the live CLI
+31-B.6 (l)/(v), not here -- the full evidence is "86 rows plus the live CLI
 table". Run all:
     python3 bench/r6_matrix.py            (prints "<id> -> <real message>"; exit 2 if any
                                            row did NOT fail as pinned)
@@ -17,7 +18,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jsonl_check as j
-from test_jsonl_check import GOOD_RECORD, GOOD_DERIVED, GOOD_KEY, GOOD_MARKERS
+from test_jsonl_check import GOOD_RECORD, GOOD_DERIVED, GOOD_COMBINED, GOOD_KEY, GOOD_MARKERS
 
 OBS_OK = {"state": "observed", "threads_max": 1, "rss_kb": 1000}
 OBS_2T = {"state": "observed", "threads_max": 2, "rss_kb": 1000}
@@ -32,8 +33,15 @@ GOOD_CONFIG_DOCKER = dict(GOOD_CONFIG, exec_mode="docker",
 
 def must(cond, msg):
     assert cond, msg
+def no_raise(fn):  # True iff fn() does NOT raise AssertionError (boundary rows, A10)
+    try:
+        fn()
+        return True
+    except AssertionError:
+        return False
 def R(): return copy.deepcopy(GOOD_RECORD)
 def D(): return copy.deepcopy(GOOD_DERIVED)
+def CB(): return copy.deepcopy(GOOD_COMBINED)
 def C(): return copy.deepcopy(GOOD_CONFIG)
 def setk(d, path, v):
     cur = d
@@ -85,6 +93,9 @@ ROWS = [
     ("P31", "requires 'measured': false",                  lambda: j.validate_record(setk(D(), ["measured"], True))),
     ("P32", "requires source 'ACNS26-Tables3-4'",          lambda: j.validate_record(setk(D(), ["source"], "x"))),
     ("P33", "scenario 'derived-T3' not in",                lambda: j.validate_record(setk(D(), ["scenario"], "derived-T3"))),
+    # ---- validate_record: combined-loopback rows (A10, Task 34) ----
+    ("B1",  "r_out and s_out must be 0 (A10)",              lambda: j.validate_record(setk(CB(), ["bytes", "r_out"], 5))),
+    ("B2",  "total == external_total (A10)",                lambda: j.validate_record(setk(CB(), ["bytes", "external_total"], 1))),
     # ---- check_counts (HSTx3) ----
     ("K1",  "duplicate record for",                        lambda: j.check_counts([R(), R()], [GOOD_KEY], 1)),
     ("K2",  "has trials [0], wanted 0..1",                 lambda: j.check_counts([R()], [GOOD_KEY], 2)),
@@ -115,6 +126,18 @@ ROWS = [
     ("T10", "required flag 'threads>1:runtime-helpers' absent", lambda: j.accept_record(j.build_record(setk(C(), ["thread_regime"], "runtime-helpers"), "LOCAL", "ok", SEG, 1, 1, {"r": OBS_OK, "s": OBS_OK}, [], 0), flags=["threads>1:runtime-helpers"])),
     ("T11", "Threads line regex must not match a malformed line", lambda: must(j.THREADS_RE.match("Threads: nine") is not None, "Threads line regex must not match a malformed line: the inverse claim fails")),
     ("T12", "VmHWM line regex must not match a malformed line",   lambda: must(j.VMHWM_RE.match("VmHWM:  123 MB") is not None, "VmHWM line regex must not match a malformed line: the inverse claim fails")),
+    # ---- build_record: combined-loopback byte regime (A10, Task 34) ----
+    ("B3",  "must be present together (A10)",                 lambda: j.build_record(C(), "LOCAL", "ok", SEG, 0, 0, {"r": OBS_OK, "s": OBS_OK}, ["bytes=combined-loopback"], 0)),
+    ("B4",  "must be present together (A10)",                 lambda: j.build_record(C(), "LOCAL", "ok", SEG, 0, 0, {"r": OBS_OK, "s": OBS_OK}, ["combined_total_b=100"], 0)),
+    # B5/B5b: the calibration-noise ceiling (VETH_CALIBRATION_NOISE_MAX_B=8192) is a
+    # BOUNDARY, demonstrated on both sides -- one value just above it (must fail) and
+    # one value AT it (must NOT fail); a one-sided negative would not show the
+    # boundary is where the assertion message says it is.
+    ("B5",  "r_out+s_out <= 8192 B",                          lambda: j.build_record(C(), "LOCAL", "ok", SEG, 8193, 0, {"r": OBS_OK, "s": OBS_OK}, ["bytes=combined-loopback", "combined_total_b=100"], 0)),
+    ("B5b", "8192 B (the ceiling) must NOT raise: the inverse claim fails",
+            lambda: must(no_raise(lambda: j.build_record(C(), "LOCAL", "ok", SEG, 8192, 0, {"r": OBS_OK, "s": OBS_OK}, ["bytes=combined-loopback", "combined_total_b=100"], 0)) is False,
+                         "8192 B (the ceiling) must NOT raise: the inverse claim fails")),
+    ("B6",  "bytes.total > 0 (A10)",                          lambda: j.build_record(C(), "LOCAL", "ok", SEG, 0, 0, {"r": OBS_OK, "s": OBS_OK}, ["bytes=combined-loopback", "combined_total_b=0"], 0)),
     # ---- accept_record (executable smoke/calibration gates) ----
     ("A1",  "status 'timeout' != required 'ok'",            lambda: j.accept_record(setk(R(), ["status"], "timeout"))),
     ("A2",  "required notes token 'result=65504' absent",   lambda: j.accept_record(R(), expect=["result=65504"])),

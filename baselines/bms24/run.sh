@@ -1,13 +1,58 @@
 #!/usr/bin/env bash
-# baselines/bms24/run.sh -- Task 32 (W8.1, phase-8-plan.md § 32.2): the BMS+24
-# (ruidazeng/upsi-revisited @ d6ddfb5) wrapper. Encodes exactly the flag
-# contracts pinned by BMS24-IMAGE-EVIDENCE.md: `--func=CA` on all four
-# invocations (both `run` binaries default to SUM); the stored-trees flag is
-# spelled `--trees` on addition / `--import` on deletion; the addition
+# baselines/bms24/run.sh -- Task 32 (W8.1, phase-8-plan.md § 32.2), A10-revised
+# by Task 34: the BMS+24 (ruidazeng/upsi-revisited @ d6ddfb5) wrapper. Encodes
+# exactly the flag contracts pinned by BMS24-IMAGE-EVIDENCE.md: `--func=CA` on
+# all four invocations (both `run` binaries default to SUM); the stored-trees
+# flag is spelled `--trees` on addition / `--import` on deletion; the addition
 # binaries have NO delete concept at all, so the TV-F17 refusal below is
-# entirely this wrapper's job, never the binary's. GC channel (deletion only)
-# is DNAT'd in $NS_R -- `--gc_IP` is defined upstream but dead (party 0
-# hardcodes 127.0.0.1), so it is never passed.
+# entirely this wrapper's job, never the binary's.
+#
+# A10 (controller amendment, USER DECISION 2026-08-22): BMS+24's gRPC uses
+# LOCAL CREDENTIALS, which accept ONLY the literal address 127.0.0.1 (measured:
+# 10.99.0.2 and 127.0.1.2 both REJECTED -- an exact-address check, not a 127/8
+# range check; 127.0.0.1+DNAT passes the client check then dies server-side;
+# both parties in ONE netns on real loopback SUCCEEDS end to end). So NO
+# per-party netns pair can satisfy this on both ends at once, and BOTH variants
+# here run their own ad hoc docker container PAIR sharing exactly one real
+# network namespace via `--network container:<peer>` -- see the bms_lo_*
+# helpers below. `CONTAINER_R`/`CONTAINER_S` (measure.sh's generic per-party
+# containers, each in their OWN netns) are left completely unused by this
+# wrapper; measure.sh tears them down as usual, harmlessly idle. This also
+# means the GC channel's old DNAT/route_localnet workaround is GONE: party 0's
+# hardcoded `127.0.0.1:1025` now genuinely reaches party 1 directly, since both
+# processes share the same real loopback.
+#
+# Byte accounting is therefore the "combined" regime (bench/jsonl_check.py):
+# bytes.r_out=bytes.s_out=0, bytes.total=bytes.external_total measured from
+# the shared `lo`'s tx delta (established by real measurement, task-34-report:
+# a ONE-WAY known 10,485,760 B loopback transfer produced a `lo` tx delta of
+# 10,512,972 B -- i.e. a one-way send increments `lo` tx ONCE, no halving/
+# doubling. The bidirectional claim is a GENERALIZATION from that one-way
+# result, not a separate bidirectional measurement: every send by either
+# party increments the same `lo` tx counter once regardless of direction, so
+# the two parties' sends sum to the combined total with each byte counted
+# once. `combined_total_b` therefore includes real TCP/IP framing, not just
+# payload -- ~0.26% overhead in the one-way test, immaterial against BMS+24's
+# 45.7 MB +-10% window but disclosed here rather than left for someone to
+# discover later). netem shaping is applied directly to `lo` inside the ad
+# hoc netns, using bench/netem.sh's OWN PROFILE_RTT_US/PROFILE_RATE_KBIT/
+# LIMIT tables (sourced below, never duplicated) with the project's existing
+# halving convention (delay_us = max(0, (target_rtt_us - measured_base_us)/2),
+# applied ONCE since `lo` is traversed twice per round trip -- the same
+# convention FastUPSI's own `network_setup.sh on 40` encodes for an 80 ms RTT).
+#
+# DISCLOSURE (Phase-10 caption obligation, like `shaping=whole-run(...)` for
+# fastupsi): measure.sh's own generic step 8 still applies netem to the
+# STANDARD veth pair (sympsica_r/sympsica_s) for every docker-mode trial,
+# bms24 included -- but bms24's traffic never touches that pair, so that
+# shaping is INERT for bms24 rows. The shaping of record for bms24 is the
+# `lo` qdisc this wrapper applies (bms_lo_apply_netem below); a reader
+# should not assume a bms24 row's profile shaping came from the standard
+# veth path. That same generic step also sends 20 real ICMP pings on the
+# veth pair to measure base RTT (regardless of protocol), which is why
+# jsonl_check.py's combined-loopback byte check tolerates a small
+# VETH_CALIBRATION_NOISE_MAX_B ceiling rather than requiring the veth deltas
+# to be exactly zero (see that file for the measured magnitude).
 set -u
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -15,6 +60,52 @@ SELF="$REPO/baselines/bms24/run.sh"
 JSONL_CHECK="$REPO/bench/jsonl_check.py"
 # shellcheck source=bench/lib.sh
 source "$REPO/bench/lib.sh"
+# shellcheck source=bench/netem.sh
+source "$REPO/bench/netem.sh"   # sourceable via its BASH_SOURCE==$0 guard (A10) -- PROFILE_RTT_US/PROFILE_RATE_KBIT/LIMIT
+
+# ---------------------------------------------------------------------------
+# A10: single shared-loopback-netns topology (ad hoc container pair, own trap)
+# ---------------------------------------------------------------------------
+BMS_LO_NS=sympsica_lo
+BMS_LO_CTR_R=sympsica_bms_lo_r
+BMS_LO_CTR_S=sympsica_bms_lo_s
+
+bms_lo_teardown() {
+  docker rm -f "$BMS_LO_CTR_S" "$BMS_LO_CTR_R" >/dev/null 2>&1 || true
+  rm -f "/var/run/netns/$BMS_LO_NS" 2>/dev/null || true
+}
+
+bms_lo_up() {  # $1=image $2=mem (may be empty)
+  local image=$1 mem=$2
+  bms_lo_teardown
+  docker run -d --name "$BMS_LO_CTR_R" --network none --cpuset-cpus="$CORE_R" \
+    ${mem:+--memory "$mem"} -v "$STATE_WORK:/state:rw" -v "$RUN_WORKDIR:/runwork:rw" \
+    "$image" sleep infinity >/dev/null
+  docker run -d --name "$BMS_LO_CTR_S" --network "container:$BMS_LO_CTR_R" --cpuset-cpus="$CORE_S" \
+    ${mem:+--memory "$mem"} -v "$STATE_WORK:/state:rw" -v "$RUN_WORKDIR:/runwork:rw" \
+    "$image" sleep infinity >/dev/null
+  local pid_r
+  pid_r=$(docker inspect -f '{{.State.Pid}}' "$BMS_LO_CTR_R")
+  mkdir -p /var/run/netns
+  ln -sfT "/proc/$pid_r/ns/net" "/var/run/netns/$BMS_LO_NS"
+  ip netns exec "$BMS_LO_NS" ip link set lo up
+}
+
+bms_lo_measure_base_us() {  # $1=ping count -> integer microseconds (real loopback RTT)
+  local n=$1 avg_ms
+  avg_ms=$(ip netns exec "$BMS_LO_NS" ping -c "$n" -i 0.2 -q 127.0.0.1 2>/dev/null \
+           | sed -n 's#^rtt min/avg/max/mdev = [0-9.]*/\([0-9.]*\)/.*#\1#p')
+  python3 -c 'import sys; print(int(round(float(sys.argv[1]) * 1000)))' "$avg_ms"
+}
+
+bms_lo_apply_netem() {  # $1=profile (LAN|WAN200|WAN50|WAN5) -- shapes `lo`, not veth
+  local profile=$1 base_us delay_us
+  ip netns exec "$BMS_LO_NS" tc qdisc del dev lo root 2>/dev/null || true
+  base_us=$(bms_lo_measure_base_us 20)
+  delay_us=$(( (${PROFILE_RTT_US[$profile]} - base_us) / 2 ))
+  [ "$delay_us" -lt 0 ] && delay_us=0
+  ip netns exec "$BMS_LO_NS" tc qdisc replace dev lo root netem delay ${delay_us}us rate ${PROFILE_RATE_KBIT[$profile]}kbit limit "$LIMIT"
+}
 
 cfg_get() { python3 "$JSONL_CHECK" config --file "$1" --get "$2"; }
 
@@ -148,10 +239,13 @@ action_run() {
     esac
   done
 
-  local variant days delete_mode bin port trees_flag gc_flag
+  local variant days delete_mode bin port trees_flag gc_flag network image mem
   variant=$(cfg_get "$config" variant)
   days=$(cfg_get "$config" days)
   delete_mode=$(cfg_get "$config" delete_mode)
+  network=$(cfg_get "$config" network)
+  image=$(cfg_get "$config" image)
+  mem=$(cfg_get "$config" mem)
 
   case "$variant" in
     add-only) bin=upsi/addition; port=10501; trees_flag=--trees; gc_flag="" ;;
@@ -159,18 +253,28 @@ action_run() {
     *) echo "bms24 run: variant '$variant' not in {add-only, add-del}" >&2; exit 3 ;;
   esac
 
+  # A10: build the ad hoc single-netns loopback pair for THIS trial; torn down
+  # unconditionally on process exit (this trap covers every exit path in this
+  # function, including the various `exit $?` early-outs below -- it does NOT
+  # survive a SIGKILL from measure.sh's own timeout, which is a known residual
+  # gap noted in the task report; the NEXT trial's bms_lo_up() removes any
+  # stale containers before creating fresh ones, and the on-instance runbook
+  # carries a belt-and-suspenders `docker rm -f` of these exact names too).
+  trap bms_lo_teardown EXIT
+  bms_lo_up "$image" "$mem"
+  bms_lo_apply_netem "$network"
+
   phase total_workload_begin
   phase_zero setup_once
   phase_zero preprocessing
 
-  if [ "$variant" = "add-del" ]; then
-    # GC channel: party 0 (r) hardcodes 127.0.0.1:1025 -- DNAT in $NS_R to $ADDR_S:1025.
-    ip netns exec "$NS_R" sysctl -qw net.ipv4.conf.all.route_localnet=1
-    ip netns exec "$NS_R" iptables -t nat -A OUTPUT -d 127.0.0.1/32 -p tcp --dport 1025 -j DNAT --to-destination "$ADDR_S:1025"
-    ip netns exec "$NS_R" iptables -t nat -A POSTROUTING -o veth_r -j MASQUERADE
-  fi
+  # Combined byte accounting (A10 clause 2/3): measured from the ONE shared
+  # `lo`'s tx delta, taken AFTER bms_lo_up/bms_lo_apply_netem's OWN calibration
+  # pings (which must not be counted) and around the real protocol traffic.
+  local lo_tx_before
+  lo_tx_before=$(tx_bytes "$BMS_LO_NS" lo)
 
-  launch_party s "$CONTAINER_S" run bash -lc \
+  launch_party s "$BMS_LO_CTR_S" run bash -lc \
     "cd /home/upsi-user && ./bazel-bin/$bin/run --party=1 --port=0.0.0.0:$port $gc_flag --days=$days --func=CA $trees_flag --data_dir=/state/data/ --out_dir=/state/out/" \
     || exit $?
 
@@ -194,10 +298,11 @@ action_run() {
   # only possible) pre-launch readiness gate is the GC port. For add-only there is no GC
   # channel at all, and $port genuinely does come up on its own (confirmed: party 1 alone
   # prints "[PartyOne] listening" without party 0), so $port remains the right gate there.
+  # A10: both waits now target $BMS_LO_NS (the shared loopback netns), not $NS_S.
   if [ "$variant" = "add-del" ]; then
-    wait_listen "$NS_S" 1025 600 || exit $?
+    wait_listen "$BMS_LO_NS" 1025 600 || exit $?
   else
-    wait_listen "$NS_S" "$port" 600 || exit $?
+    wait_listen "$BMS_LO_NS" "$port" 600 || exit $?
   fi
 
   # W8.1 pinned 3 s stagger: max(readiness, 3 s) since party-1 launch.
@@ -205,8 +310,14 @@ action_run() {
 
   phase online_begin
 
-  launch_party r "$CONTAINER_R" run bash -lc \
-    "cd /home/upsi-user && ./bazel-bin/$bin/run --party=0 --port=$ADDR_S:$port $gc_flag --days=$days --func=CA $trees_flag --data_dir=/state/data/ --out_dir=/state/out/" \
+  # A10: party 0 dials the peer's REAL shared loopback address -- both parties
+  # are literally in the same netns now, so BMS+24's gRPC local credentials
+  # (exact-match 127.0.0.1, measured -- see the module header) accept the
+  # connection on both ends. The GC channel's own hardcoded 127.0.0.1:1025
+  # (party 0, upstream, deletion only) now reaches party 1 directly; no DNAT
+  # is applied.
+  launch_party r "$BMS_LO_CTR_R" run bash -lc \
+    "cd /home/upsi-user && ./bazel-bin/$bin/run --party=0 --port=127.0.0.1:$port $gc_flag --days=$days --func=CA $trees_flag --data_dir=/state/data/ --out_dir=/state/out/" \
     || exit $?
 
   wait "$WAIT_r"; local rc_r=$?
@@ -214,6 +325,10 @@ action_run() {
 
   phase online_end
   phase total_workload_end
+
+  local lo_tx_after combined_total
+  lo_tx_after=$(tx_bytes "$BMS_LO_NS" lo)
+  combined_total=$(( lo_tx_after - lo_tx_before ))
 
   # Party 0 (r) prints "[PartyZero] CA/SUM = <int>" (deletion) or
   # "[PartyZero] CARDINALITY = <int>" (addition), plus (deletion only)
@@ -226,7 +341,7 @@ action_run() {
     internal_b=$(sed -nE 's/^Total Comm Sent\(B\):[[:space:]]*([0-9]+)$/\1/p' "$RUN_WORKDIR/party_r.stdout" | tail -1)
   fi
 
-  local tokens=("result=$result")
+  local tokens=("result=$result" "bytes=combined-loopback" "combined_total_b=$combined_total")
   [ -n "$internal_b" ] && tokens+=("internal_sent_b_r=$internal_b")
   [ -n "$delete_mode" ] && tokens+=("delete_mode=$delete_mode")
 
