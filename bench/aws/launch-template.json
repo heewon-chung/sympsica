@@ -13,5 +13,6 @@
   "MetadataOptions": {"HttpTokens": "required", "HttpEndpoint": "enabled"},
   "TagSpecifications": [
     {"ResourceType": "instance", "Tags": [{"Key": "Name", "Value": "sympsica-bench"}]}
-  ]
+  ],
+  "UserData": "IyEvYmluL2Jhc2gKc2h1dGRvd24gLWggKzQ4MAo="
 }

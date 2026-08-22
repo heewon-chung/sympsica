@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""bench/r6_matrix.py -- Phase 8 R6-NOTAUTO matrix: 86 pure-function/policy
-rows over bench/jsonl_check.py (phase-8-plan.md; 79 through Task 33, +7 for
-Task 34/A10's combined-loopback byte regime). One row per function-level
+"""bench/r6_matrix.py -- Phase 8 R6-NOTAUTO matrix: 89 pure-function/policy
+rows over bench/jsonl_check.py (phase-8-plan.md; 79 through Task 33, +10 for
+Task 34/A10's combined-loopback byte regime, incl. the Codex-review fix
+round's file-level validate_record bridge checks). One row per function-level
 assertion; each row is a ONE-FIELD mutation of a valid fixture and must raise
 AssertionError whose message contains the pinned substring. The two CLI-level
 assertions (accept's "no records" and "--count") are covered by the LIVE rows
-31-B.6 (l)/(v), not here -- the full evidence is "86 rows plus the live CLI
+31-B.6 (l)/(v), not here -- the full evidence is "89 rows plus the live CLI
 table". Run all:
     python3 bench/r6_matrix.py            (prints "<id> -> <real message>"; exit 2 if any
                                            row did NOT fail as pinned)
@@ -96,6 +97,11 @@ ROWS = [
     # ---- validate_record: combined-loopback rows (A10, Task 34) ----
     ("B1",  "r_out and s_out must be 0 (A10)",              lambda: j.validate_record(setk(CB(), ["bytes", "r_out"], 5))),
     ("B2",  "total == external_total (A10)",                lambda: j.validate_record(setk(CB(), ["bytes", "external_total"], 1))),
+    # I3 (Codex review, Task 34 fix round): validate_record enforces the two-token bridge
+    # at the file level too (build_record already did; the FILE validator did not).
+    ("B7",  "must be present together (A10)",                lambda: j.validate_record(setk(CB(), ["notes"], CB()["notes"].replace(";combined_total_b=45700000", "")))),
+    ("B8",  "must be present together (A10)",                lambda: j.validate_record(setk(R(), ["notes"], R()["notes"] + ";combined_total_b=999"))),
+    ("B9",  "must equal bytes.total 45700000 (A10)",         lambda: j.validate_record(setk(CB(), ["notes"], CB()["notes"].replace("combined_total_b=45700000", "combined_total_b=1")))),
     # ---- check_counts (HSTx3) ----
     ("K1",  "duplicate record for",                        lambda: j.check_counts([R(), R()], [GOOD_KEY], 1)),
     ("K2",  "has trials [0], wanted 0..1",                 lambda: j.check_counts([R()], [GOOD_KEY], 2)),

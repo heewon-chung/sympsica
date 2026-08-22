@@ -91,20 +91,55 @@ bms_lo_up() {  # $1=image $2=mem (may be empty)
   ip netns exec "$BMS_LO_NS" ip link set lo up
 }
 
-bms_lo_measure_base_us() {  # $1=ping count -> integer microseconds (real loopback RTT)
+bms_lo_measure_base_us() {  # $1=ping count -> integer microseconds (real loopback RTT); exit 5 on unparseable ping
   local n=$1 avg_ms
   avg_ms=$(ip netns exec "$BMS_LO_NS" ping -c "$n" -i 0.2 -q 127.0.0.1 2>/dev/null \
            | sed -n 's#^rtt min/avg/max/mdev = [0-9.]*/\([0-9.]*\)/.*#\1#p')
+  # C4 (Codex review, Task 34 fix round): an unparseable/empty avg_ms must NOT silently
+  # become an empty string that arithmetic later treats as zero (that's the
+  # silently-wrong-measurement class -- worse than a crash: it would apply zero
+  # compensation and run at the wrong delay under a correct-looking profile label).
+  [[ "$avg_ms" =~ ^[0-9]+(\.[0-9]+)?$ ]] || {
+    echo "bms_lo_measure_base_us: could not parse a numeric RTT from ping (got '$avg_ms')" >&2
+    return 5
+  }
   python3 -c 'import sys; print(int(round(float(sys.argv[1]) * 1000)))' "$avg_ms"
 }
 
-bms_lo_apply_netem() {  # $1=profile (LAN|WAN200|WAN50|WAN5) -- shapes `lo`, not veth
+bms_lo_apply_netem() {  # $1=profile (LAN|WAN200|WAN50|WAN5) -- shapes `lo`, not veth; exit 5 on any failure
   local profile=$1 base_us delay_us
   ip netns exec "$BMS_LO_NS" tc qdisc del dev lo root 2>/dev/null || true
-  base_us=$(bms_lo_measure_base_us 20)
+  base_us=$(bms_lo_measure_base_us 20) || return $?
   delay_us=$(( (${PROFILE_RTT_US[$profile]} - base_us) / 2 ))
   [ "$delay_us" -lt 0 ] && delay_us=0
-  ip netns exec "$BMS_LO_NS" tc qdisc replace dev lo root netem delay ${delay_us}us rate ${PROFILE_RATE_KBIT[$profile]}kbit limit "$LIMIT"
+  ip netns exec "$BMS_LO_NS" tc qdisc replace dev lo root netem delay ${delay_us}us rate ${PROFILE_RATE_KBIT[$profile]}kbit limit "$LIMIT" || {
+    echo "bms_lo_apply_netem: tc qdisc replace failed for profile $profile (delay ${delay_us}us rate ${PROFILE_RATE_KBIT[$profile]}kbit)" >&2
+    return 5
+  }
+  # C4: STRUCTURAL check of the ACTUAL applied qdisc before any party launches -- trusting
+  # tc's own exit code alone is not enough (a silent no-op or partial apply would still
+  # exit 0); this reads back what the kernel actually holds and compares against what we
+  # asked for, the same regex/unit-multiplier convention bench/netem.sh's own
+  # verify_structural uses for the veth pair.
+  local dump
+  dump=$(ip netns exec "$BMS_LO_NS" tc qdisc show dev lo 2>&1)
+  python3 - "$dump" "${PROFILE_RATE_KBIT[$profile]}" <<'PYEOF'
+import re, sys
+dump, want_rate_kbit = sys.argv[1], int(sys.argv[2])
+if "netem" not in dump:
+    sys.stderr.write("bms_lo_apply_netem: structural check FAILED -- no netem qdisc on lo: %r\n" % dump)
+    sys.exit(1)
+m = re.search(r"rate ([0-9.]+)([KMG]?)bit", dump)
+if not m:
+    sys.stderr.write("bms_lo_apply_netem: structural check FAILED -- no rate present in qdisc dump: %r\n" % dump)
+    sys.exit(1)
+mult = {"": 1, "K": 1000, "M": 1000000, "G": 1000000000}[m.group(2)]
+got_kbit = (float(m.group(1)) * mult) / 1000.0
+if abs(got_kbit - want_rate_kbit) > 0.01 * want_rate_kbit:
+    sys.stderr.write("bms_lo_apply_netem: structural check FAILED -- qdisc rate %.1f kbit != expected %d kbit\n" % (got_kbit, want_rate_kbit))
+    sys.exit(1)
+PYEOF
+  [ $? -eq 0 ] || return 5
 }
 
 cfg_get() { python3 "$JSONL_CHECK" config --file "$1" --get "$2"; }
@@ -261,8 +296,8 @@ action_run() {
   # stale containers before creating fresh ones, and the on-instance runbook
   # carries a belt-and-suspenders `docker rm -f` of these exact names too).
   trap bms_lo_teardown EXIT
-  bms_lo_up "$image" "$mem"
-  bms_lo_apply_netem "$network"
+  bms_lo_up "$image" "$mem" || exit $?
+  bms_lo_apply_netem "$network" || exit $?
 
   phase total_workload_begin
   phase_zero setup_once

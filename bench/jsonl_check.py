@@ -112,18 +112,31 @@ def validate_record(rec):
     # notes' own type is asserted further below (P25); guard here so a
     # malformed (non-string) notes field still reaches THAT assertion instead
     # of crashing on .split() first.
-    combined = isinstance(rec.get("notes"), str) and COMBINED_LOOPBACK_TOKEN in rec["notes"].split(";")
+    notes_list = rec["notes"].split(";") if isinstance(rec.get("notes"), str) else []
+    combined_flag = COMBINED_LOOPBACK_TOKEN in notes_list
+    combined_vals = [m.group(1) for tok in notes_list for m in (COMBINED_TOTAL_RE.match(tok),) if m]
     if env == "DERIVED":
         assert b["r_out"] == 0 and b["s_out"] == 0, \
             "HST: DERIVED rows have no directional split: r_out and s_out must be 0 (A1)"
         assert b["total"] == b["external_total"], \
             "HST: DERIVED rows require bytes.total == external_total == published bytes (A1)"
-    elif combined:
+    elif combined_flag or combined_vals:
+        # I3 (Codex review, Task 34 fix round): the FILE-LEVEL validator must enforce the
+        # same two-token bridge build_record does, not just notice the flag -- otherwise a
+        # damaged/edited bridge (flag with no numeric token, a numeric token with no flag,
+        # or a numeric token that no longer matches bytes.total) passes `jsonl_check.py
+        # validate` even though it could never have come out of build_record honestly.
+        assert combined_flag and combined_vals, \
+            "HST: bytes=combined-loopback and combined_total_b=<int> must be present together (A10); got flag=%s combined_total_b=%s" % (combined_flag, combined_vals)
+        assert len(combined_vals) == 1, \
+            "HST: exactly one combined_total_b=<int> token is required (A10), got %s" % (combined_vals,)
         assert b["r_out"] == 0 and b["s_out"] == 0, \
             "HST: combined-loopback rows have no directional split: r_out and s_out must be 0 (A10)"
         assert b["total"] == b["external_total"], \
             "HST: combined-loopback rows require bytes.total == external_total (A10)"
         assert b["total"] > 0, "HST: combined-loopback rows require bytes.total > 0 (A10)"
+        assert int(combined_vals[0]) == b["total"], \
+            "HST: combined_total_b=%s must equal bytes.total %d (A10)" % (combined_vals[0], b["total"])
     else:
         assert b["total"] == b["r_out"] + b["s_out"], \
             "HST: bytes.total %d != r_out+s_out %d" % (b["total"], b["r_out"] + b["s_out"])

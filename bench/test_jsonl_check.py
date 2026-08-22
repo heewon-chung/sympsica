@@ -90,6 +90,11 @@ class TestSchema(unittest.TestCase):
         c = CB(); c["bytes"]["r_out"] = 5; self.assertFails(c, "r_out and s_out must be 0 (A10)")
         c = CB(); c["bytes"]["external_total"] = 1; self.assertFails(c, "total == external_total (A10)")
         c = CB(); c["bytes"]["total"] = 0; c["bytes"]["external_total"] = 0; self.assertFails(c, "total > 0 (A10)")
+        # I3 (Codex review, Task 34 fix round): validate_record must enforce the two-token
+        # bridge at the file level too, not just build_record.
+        c = CB(); c["notes"] = c["notes"].replace(";combined_total_b=45700000", ""); self.assertFails(c, "must be present together (A10)")
+        r = R(); r["notes"] = r["notes"] + ";combined_total_b=999"; self.assertFails(r, "must be present together (A10)")
+        c = CB(); c["notes"] = c["notes"].replace("combined_total_b=45700000", "combined_total_b=1"); self.assertFails(c, "must equal bytes.total 45700000 (A10)")
 
 
 class TestCounts(unittest.TestCase):
