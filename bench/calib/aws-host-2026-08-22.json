@@ -1,0 +1,15 @@
+{
+ "date": "2026-08-22",
+ "env": "AWS",
+ "nproc": 16,
+ "threads_per_core": 1,
+ "cpu_model": "Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz",
+ "kernel": "6.8.0-1061-aws",
+ "governor": "n/a (EC2 Nitro)",
+ "boot_id": "0c308a88-3088-4ecf-9b29-1fc8ff042e47",
+ "instance_type": "c6i.8xlarge",
+ "instance_id": "i-06c4038eaa6b31086",
+ "ami_id": "ami-06e78a71af43ef21a",
+ "region": "us-east-1",
+ "availability_zone": "us-east-1d"
+}
