@@ -2,4 +2,4 @@
  "n":1048576,"u":1024,"days":1,"daily_size":1024,"start_size":1047552,"del_size":0,
  "network":"LAN","seed":0,"queries":1,"exec_mode":"docker","thread_regime":"runtime-helpers",
  "image":"ghcr.io/ruidazeng/upsi-revisited@sha256:221cfc61a843c928a0fba256b85f35a5ace5dd7f1ff91e144359a8942144cd8d",
- "mem":"56g","state_dir":"/tmp/sympsica-bench/cache/bms24/1048576_1024_add-only","budget_s":3600}
+ "mem":"56g","state_dir":"/var/lib/sympsica-bench/cache/bms24/1048576_1024_add-only","budget_s":3600}
