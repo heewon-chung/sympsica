@@ -14,5 +14,5 @@
   "TagSpecifications": [
     {"ResourceType": "instance", "Tags": [{"Key": "Name", "Value": "sympsica-bench"}]}
   ],
-  "UserData": "IyEvYmluL2Jhc2gKc2h1dGRvd24gLWggKzQ4MAo="
+  "UserData": "IyEvYmluL2Jhc2gKc2h1dGRvd24gLWggKzQ4MApta2RpciAtcCAvdmFyL2xpYi9jbG91ZC9zY3JpcHRzL3Blci1ib290CmNhdCA+IC92YXIvbGliL2Nsb3VkL3NjcmlwdHMvcGVyLWJvb3QvMDAtc3ltcHNpY2EtZmFpbHNhZmUuc2ggPDxFT0YKIyEvYmluL2Jhc2gKc2h1dGRvd24gLWggKzQ4MApFT0YKY2htb2QgK3ggL3Zhci9saWIvY2xvdWQvc2NyaXB0cy9wZXItYm9vdC8wMC1zeW1wc2ljYS1mYWlsc2FmZS5zaAo="
 }

@@ -125,17 +125,34 @@ SSH="ssh -i $SSH_PRIVATE_KEY_PATH -o StrictHostKeyChecking=accept-new"
 for i in $(seq 1 30); do if $SSH ubuntu@"$IP" true 2>/dev/null; then SSH_READY=1; break; fi; sleep 10; done
 [ "$SSH_READY" = 1 ] || { echo "sshd never became ready on $IP" >&2; false; }
 
-# A12 mechanism 1, verified early (fail fast rather than discover at the very end): confirm
-# the boot-level failsafe (launch-template.json's UserData) actually ran. `shutdown -h +480`
-# on a systemd host creates /run/systemd/shutdown/scheduled -- verified by real measurement
-# on colima's systemd Ubuntu VM (task-34-report.md): schedule/cancel/reschedule all produce
-# and remove that exact file.
-FAILSAFE_OK=0
-for i in $(seq 1 10); do
-  if $SSH ubuntu@"$IP" "test -f /run/systemd/shutdown/scheduled" 2>/dev/null; then FAILSAFE_OK=1; break; fi
-  sleep 3
-done
-[ "$FAILSAFE_OK" = 1 ] || { echo "boot-level failsafe shutdown (user-data) is not scheduled on the instance -- refusing to proceed" >&2; false; }
+# A12 mechanism 1, verified early (fail fast rather than discover at the very end) AND again
+# after any reboot below (fix round 2, Codex re-review): confirm the boot-level failsafe
+# actually ran on THIS boot. `shutdown -h +480` on a systemd host creates
+# /run/systemd/shutdown/scheduled -- verified by real measurement on colima's systemd Ubuntu VM
+# (task-34-report.md): schedule/cancel/reschedule all produce and remove that exact file.
+#
+# CORRECTION (Codex re-review of fix round 1): a plain `#!/bin/bash` UserData script is
+# cloud-init's `scripts-user` module, which runs at frequency ONCE-PER-INSTANCE, NOT per boot
+# -- it does NOT re-run on a reboot. The report's original comment claiming otherwise was an
+# unchecked assumption about cloud-init's default behaviour, exactly the class of defect this
+# whole review round exists to catch. Since PHASE 1 DOES reboot the instance below whenever
+# `linux-modules-extra` (installed for sch_netem) triggers /var/run/reboot-required, the
+# +480 min failsafe set by the FIRST boot's UserData run would otherwise be silently gone by
+# the time PHASE 2 needs it. Fix: UserData now ALSO installs
+# /var/lib/cloud/scripts/per-boot/00-sympsica-failsafe.sh (cloud-init's `scripts-per-boot`
+# module, which DOES run on every boot including the post-provisioning reboot) so any boot,
+# planned or not, re-arms the failsafe -- and this verification is explicitly re-run after
+# that reboot too, refusing to proceed if it is absent, rather than trusting the self-healing
+# mechanism without checking it.
+verify_failsafe_scheduled() {
+  local ok=0
+  for i in $(seq 1 10); do
+    if $SSH ubuntu@"$IP" "test -f /run/systemd/shutdown/scheduled" 2>/dev/null; then ok=1; break; fi
+    sleep 3
+  done
+  [ "$ok" = 1 ] || { echo "boot-level failsafe shutdown (user-data / per-boot script) is not scheduled on the instance -- refusing to proceed" >&2; return 1; }
+}
+verify_failsafe_scheduled || false
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 # I2 (Codex review, Task 34 fix round): the FIXED controller resource is the budget
@@ -171,12 +188,16 @@ R "LOGGED ~/provision.log -- bash bench/aws/provision.sh --out ~/aws-host.json"
 if R "test -f /var/run/reboot-required"; then
   # A reboot cannot be survived by an on-instance tmux script (tmux state is
   # process state, gone across a hard reboot) -- this MUST stay in PHASE 1.
-  # (The boot-level failsafe re-arms on this reboot too -- it is UserData,
-  # run by cloud-init on every boot, not a one-shot post-launch action.)
+  # The boot-level failsafe re-arms across THIS reboot via the per-boot script UserData
+  # installed (cloud-init's `scripts-per-boot` module runs on every boot; the UserData
+  # script itself is `scripts-user`, once-per-instance only -- see the comment above
+  # verify_failsafe_scheduled for the full correction). Re-verified explicitly below,
+  # not trusted on the strength of the mechanism alone.
   $SSH ubuntu@"$IP" sudo reboot || true; sleep 60
   aws ec2 wait instance-running --region "$REGION" --instance-ids "$INSTANCE_ID"
   SSH_READY=0; for i in $(seq 1 30); do if $SSH ubuntu@"$IP" true 2>/dev/null; then SSH_READY=1; break; fi; sleep 10; done
   [ "$SSH_READY" = 1 ] || { echo "sshd never came back after reboot" >&2; false; }
+  verify_failsafe_scheduled || false
   R "LOGGED ~/provision-check.log -- bash bench/aws/provision.sh --check-only --out ~/aws-host.json"
 fi
 RN 4 "HARD GATE FAILED: nproc=32" -- "bash bench/aws/provision.sh --check-only --out /tmp/x.json --nproc-override 32"
