@@ -178,8 +178,8 @@ RN() {  # expected-negative rows: RN <expected_rc> <expected_substring> -- <remo
   local out rc=0
   out=$($SSH ubuntu@"$IP" "cd ~/symm-upsi-ca && source bench/lib.sh && $*" 2>&1) || rc=$?
   printf '%s\n' "$out"
-  if [ "$rc" != "$want_rc" ] || ! printf '%s' "$out" | grep -qF "$want_sub"; then
-    echo "EXPECTED-NEGATIVE MISMATCH: rc=$rc (want $want_rc); substring '$want_sub' $(printf '%s' "$out" | grep -qF "$want_sub" && echo found || echo MISSING)" >&2
+  if [ "$rc" != "$want_rc" ] || ! printf '%s' "$out" | grep -qF -e "$want_sub"; then
+    echo "EXPECTED-NEGATIVE MISMATCH: rc=$rc (want $want_rc); substring '$want_sub' $(printf '%s' "$out" | grep -qF -e "$want_sub" && echo found || echo MISSING)" >&2
     return 1   # trips the ERR trap -> stop-instances
   fi
   echo "expected-negative OK (rc=$rc, matched '$want_sub')"
@@ -261,8 +261,8 @@ RN() {  # RN <expected_rc> <expected_substring> -- <command...> (same contract a
   local out rc=0
   out=$(bash -c "source bench/lib.sh; $*" 2>&1) || rc=$?
   printf '%s\n' "$out"
-  if [ "$rc" != "$want_rc" ] || ! printf '%s' "$out" | grep -qF "$want_sub"; then
-    echo "EXPECTED-NEGATIVE MISMATCH: rc=$rc (want $want_rc); substring '$want_sub' $(printf '%s' "$out" | grep -qF "$want_sub" && echo found || echo MISSING)"
+  if [ "$rc" != "$want_rc" ] || ! printf '%s' "$out" | grep -qF -e "$want_sub"; then
+    echo "EXPECTED-NEGATIVE MISMATCH: rc=$rc (want $want_rc); substring '$want_sub' $(printf '%s' "$out" | grep -qF -e "$want_sub" && echo found || echo MISSING)"
     return 1
   fi
   echo "expected-negative OK (rc=$rc, matched '$want_sub')"

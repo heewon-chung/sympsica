@@ -120,14 +120,37 @@ cmd_apply() {
     echo "WRONG-CONSTRUCTION: rate doubled (TEST-ONLY)" >&2
   fi
 
-  # step 4: replace on both veth ends -- except one-sided under the TEST-ONLY flag
-  ip netns exec sympsica_r tc qdisc replace dev veth_r root netem delay ${delay_us}us rate ${rate_kbit}kbit limit "$LIMIT"
+  # step 3b: tbf burst. A token bucket that cannot hold one timer tick's worth of
+  # tokens under-delivers, so burst >= rate/HZ; sized at rate/250 (HZ=250 here) with a
+  # 2*MTU floor to keep the low-rate profiles' buckets sane.
+  local burst_bytes=$(( rate_kbit * 1000 / 8 / 250 ))
+  [ "$burst_bytes" -lt 3000 ] && burst_bytes=3000
+
+  # step 4: shape both veth ends -- except one-sided under the TEST-ONLY flag.
+  #
+  # The delay and the rate MUST live in separate qdiscs. A single netem instance
+  # carrying both `delay` and `rate` dequeues roughly one packet per DELAY interval
+  # instead of pipelining, capping throughput near MTU/delay whatever rate is asked
+  # for. Measured on c6i.8xlarge / 6.8.0-1061-aws (2026-08-22), LAN, target 1 Gbit:
+  #   netem delay only ............ 16554.6 Mbit
+  #   netem rate only .............   934.6 Mbit
+  #   netem delay + rate together .   142.7 Mbit  <- 88.8 us/pkt against delay 96us
+  #   netem delay + tbf rate ......   952.6 Mbit  <- this construction
+  # Each element is correct alone; only their combination in one netem is broken.
+  # (Not reproducible under colima/6.8.0-117-generic, where the combined form is
+  # accurate -- so this is host-dependent and the split is the portable form.)
+  apply_shaping() {  # $1 ns  $2 dev
+    ip netns exec "$1" tc qdisc replace dev "$2" root handle 1: netem delay ${delay_us}us limit "$LIMIT"
+    ip netns exec "$1" tc qdisc replace dev "$2" parent 1: handle 10: tbf \
+      rate ${rate_kbit}kbit burst ${burst_bytes} latency 50ms
+  }
+  apply_shaping sympsica_r veth_r
   local one_sided=false
   if [ "$wrong_one_sided" = 1 ]; then
     one_sided=true
     echo "WRONG-CONSTRUCTION: one-sided delay applied (TEST-ONLY)" >&2
   else
-    ip netns exec sympsica_s tc qdisc replace dev veth_s root netem delay ${delay_us}us rate ${rate_kbit}kbit limit "$LIMIT"
+    apply_shaping sympsica_s veth_s
   fi
 
   # step 5: applied-state JSON
@@ -136,15 +159,19 @@ cmd_apply() {
   boot_id=$(cat /proc/sys/kernel/random/boot_id)
   applied_ns=$(mono_ns)
   python3 - "$APPLIED_STATE_FILE" "$profile" "$rtt_us" "$base_us" "$delay_us" "$rate_kbit" \
-    "$LIMIT" "$one_sided" "$rate_double" "$boot_id" "$applied_ns" <<'PYEOF'
+    "$LIMIT" "$one_sided" "$rate_double" "$boot_id" "$applied_ns" "$burst_bytes" <<'PYEOF'
 import json, sys
 (path, profile, rtt_us, base_us, delay_us, rate_kbit, limit,
- one_sided, rate_double, boot_id, applied_ns) = sys.argv[1:12]
+ one_sided, rate_double, boot_id, applied_ns, burst_bytes) = sys.argv[1:13]
 data = {
     "profile": profile, "rtt_target_us": int(rtt_us), "base_us": int(base_us),
     "delay_us": int(delay_us), "rate_kbit": int(rate_kbit), "limit": int(limit),
     "one_sided": one_sided == "true", "rate_double": rate_double == "true",
     "boot_id": boot_id, "applied_ns": int(applied_ns),
+    # shaper structure is provenance: delay and rate are deliberately in separate
+    # qdiscs (see the comment at step 4) -- a record made under the combined form
+    # is not comparable with one made under this form.
+    "shaper": "netem-delay+tbf-rate", "burst_bytes": int(burst_bytes),
 }
 tmp = path + ".tmp"
 with open(tmp, "w") as f:
@@ -185,7 +212,19 @@ check_throughput() {  # $1 profile -> prints measured_kbit to stdout; exit 2/4 o
   [ "$ready" = 1 ] || { echo "netem verify: iperf3 server not ready on port 5201 after 5 s" >&2; exit 4; }
   local json bps measured_kbit lo hi
   json=$(ip netns exec sympsica_r iperf3 -c 10.99.0.2 -p 5201 -t 15 -O 3 -J)
-  bps=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d["end"]["sum_received"]["bits_per_second"])' "$json")
+  # sum_sent, NOT sum_received. Both report the same byte count, but the receiver's
+  # own elapsed-time denominator inflates at high rate on this host, which understates
+  # the rate by the ratio of the two intervals. Measured on c6i.8xlarge (2026-08-22),
+  # LAN profile, the same single iperf3 run:
+  #   sum_sent      956.3 Mbit  bytes=1793064960  seconds=15.00  retr=0
+  #   sum_received  574.6 Mbit  bytes=1801328112  seconds=25.08
+  # The per-second sender series was flat at 954-965 Mbit for the whole transfer with
+  # zero retransmits, so the data genuinely moved at ~956 Mbit and it is the receiver's
+  # timer that is the artifact. WAN200 in the same run: 189.4 vs 190.0 over 15.00/15.09 s
+  # -- the two agree wherever the receiver interval is sane, so this is safe for every
+  # profile, not a LAN-only patch. Sender-side buffering cannot inflate this materially:
+  # tbf latency is 50 ms, i.e. <=0.35% of a 15 s window.
+  bps=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d["end"]["sum_sent"]["bits_per_second"])' "$json")
   measured_kbit=$(python3 -c 'import sys; print(int(round(float(sys.argv[1])/1000.0)))' "$bps")
   lo=$(python3 -c "print(int($rate_kbit*0.9))")
   hi=$(python3 -c "print(int($rate_kbit*1.1))")
